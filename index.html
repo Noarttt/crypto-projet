@@ -19,6 +19,7 @@
   --bg:#f4f6f8; --surface:#ffffff; --ink:#14202b; --muted:#5b6b79; --line:#dde3e9;
   --accent:#1f5fd1; --accent-ink:#ffffff; --up:#14804a; --down:#c0392b;
   --warn-bg:#fff1cc; --warn-ink:#5e4200; --err-bg:#fde4e1; --err-ink:#7a1f16;
+  --sim-bg:#e8f0fe; --sim-ink:#173b7a;
   --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
   --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
   color-scheme:light;
@@ -28,11 +29,13 @@
     --bg:#0e151c; --surface:#16202a; --ink:#e6edf3; --muted:#93a3b2; --line:#26333f;
     --accent:#6aa3ff; --accent-ink:#0b1420; --up:#4cc38a; --down:#ff7b6e;
     --warn-bg:#3a2f10; --warn-ink:#f1d38a; --err-bg:#3c1b17; --err-ink:#ffb4aa;
+    --sim-bg:#14284a; --sim-ink:#b9d2ff;
     color-scheme:dark;
   }
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
+[hidden]{display:none!important}
 body{
   margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 var(--font);
   padding-block:calc(env(safe-area-inset-top,0px) + 16px) calc(env(safe-area-inset-bottom,0px) + 32px);
@@ -40,6 +43,7 @@ body{
 }
 main{max-width:640px; margin-inline:auto; display:flex; flex-direction:column; gap:14px; min-width:0}
 h1{font-size:1.25rem; font-weight:600; margin:0; text-wrap:balance}
+h2{font-size:1rem; font-weight:600; margin:0}
 button,input,select{font:inherit; color:inherit}
 button{cursor:pointer}
 :focus-visible{outline:2px solid var(--accent); outline-offset:2px}
@@ -49,12 +53,14 @@ button{cursor:pointer}
 .seg{display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface)}
 .seg button{border:0; background:transparent; padding:6px 12px; font-weight:500; color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink)}
-.btn{border:1px solid var(--line); background:var(--surface); border-radius:8px; padding:6px 12px; font-weight:500}
+.btn{display:inline-block; border:1px solid var(--line); background:var(--surface); border-radius:8px; padding:6px 12px; font-weight:500; text-decoration:none; color:var(--ink); font-size:.9rem}
 .btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+.btn.small{padding:4px 10px; font-size:.82rem}
+.btn[disabled]{opacity:.45; cursor:not-allowed}
 .banner{border-radius:8px; padding:10px 12px; font-size:.9rem}
 .banner.err{background:var(--err-bg); color:var(--err-ink)}
 .banner.alert{background:var(--warn-bg); color:var(--warn-ink)}
-.banner ul{margin:4px 0 0; padding-left:18px}
+.banner.ok{background:var(--sim-bg); color:var(--sim-ink)}
 .list{display:flex; flex-direction:column; gap:10px; margin:0; padding:0; list-style:none}
 .card{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px; min-width:0}
 .card.hit{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent)}
@@ -72,13 +78,27 @@ button{cursor:pointer}
 .spark.up{color:var(--up)} .spark.down{color:var(--down)}
 .stats{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px}
 .stat{min-width:0}
-.stat b{display:block; font:500 .88rem/1.3 var(--mono); font-variant-numeric:tabular-nums}
+.stat b{display:block; font:500 .88rem/1.3 var(--mono); font-variant-numeric:tabular-nums; overflow-wrap:anywhere}
 .stat span{font-size:.72rem; color:var(--muted)}
+.acts{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+.simpos{background:var(--sim-bg); color:var(--sim-ink); border-radius:8px; padding:8px 10px; font:400 .82rem/1.4 var(--mono)}
+.trade{border:1px solid var(--line); border-radius:8px; padding:10px; display:flex; flex-direction:column; gap:8px; background:var(--bg)}
+.trade label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
+.trade input{border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:var(--surface); font:400 .95rem var(--mono); min-width:0; width:100%}
+.presets{display:flex; gap:6px; flex-wrap:wrap}
 details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weight:500}
 .alerts{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:10px}
 .alerts label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
 .alerts input{border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:var(--bg); font:400 .95rem var(--mono); min-width:0; width:100%}
 .remove{margin-top:10px; background:none; border:0; color:var(--down); padding:0; font-size:.85rem}
+.panel{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px; min-width:0}
+.panel .tag{display:inline-block; font-size:.72rem; background:var(--sim-bg); color:var(--sim-ink); border-radius:999px; padding:1px 8px; margin-left:6px; font-weight:500}
+.log{margin:8px 0 0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px; font:400 .8rem/1.4 var(--mono)}
+.log li{border-bottom:1px solid var(--line); padding-bottom:6px; overflow-wrap:anywhere}
+.settings{display:grid; grid-template-columns:repeat(auto-fit,minmax(160px,1fr)); gap:10px; margin-top:10px}
+.settings label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
+.settings input,.settings select,.field select{border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:var(--bg); font:400 .95rem var(--mono); min-width:0; width:100%}
+.field{display:flex; flex-direction:column; gap:4px; font-size:.82rem; color:var(--muted)}
 .add{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px}
 .add form{display:flex; gap:8px}
 .add input{flex:1; min-width:0; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--bg); text-transform:uppercase}
@@ -103,6 +123,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   </div>
   <div class="status" id="status" role="status">Chargement…</div>
   <div id="banners"></div>
+  <section class="panel" id="paper" aria-label="Portefeuille simulé"></section>
   <ul class="list" id="list"></ul>
   <section class="add" aria-label="Ajouter un jeton">
     <form id="add-form">
@@ -112,8 +133,14 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
     <ul class="cands" id="cands"></ul>
     <p class="note" id="add-note">Plusieurs jetons peuvent porter le même symbole : choisis celui dont le nom et le rang correspondent au projet voulu.</p>
   </section>
+  <section class="add" aria-label="Mon exchange">
+    <label class="field" for="exch">Mon exchange (pour les ordres réels)
+      <select id="exch"></select>
+    </label>
+    <p class="note">Le bouton « Trader sur… » ouvre la page de l'exchange pour ce jeton. L'ordre se passe et se confirme là-bas : cette application ne stocke aucune clé et ne passe aucun ordre réel. Vérifie toujours que le jeton y est bien coté.</p>
+  </section>
   <p class="note" id="notif-row"></p>
-  <p class="note">Cours fournis par l'API publique de CoinGecko, avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. Information uniquement : ce n'est pas un conseil d'investissement et aucun ordre n'est passé ici.</p>
+  <p class="note">Cours fournis par l'API publique de CoinGecko, avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. La simulation utilise de l'argent fictif aux prix affichés, avec des frais et un écart simulés : en réel, sur les petites capitalisations, l'écart entre achat et vente et le glissement sont souvent plus grands. Information uniquement : ce n'est pas un conseil d'investissement.</p>
 </main>
 <script>
 (function(){
@@ -123,9 +150,66 @@ var LS_KEY = "veille-crypto.v1";
 var API = "https://api.coingecko.com/api/v3";
 
 function mkAlerts(){ return {above:null, below:null, move:null}; }
+
+/* PAPER-CORE-START */
+function newPaper(cur, amount){
+  var a = amount > 0 ? amount : 300;
+  return {cur: cur || "chf", start: a, cash: a, fee: 1, pos: {}, log: []};
+}
+function paperBuy(p, id, sym, spend, price){
+  spend = Number(spend);
+  if(!(spend > 0)) return {ok:false, msg:"Montant invalide."};
+  if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
+  if(spend > p.cash + 1e-9) return {ok:false, msg:"Solde simulé insuffisant."};
+  var fee = spend * p.fee / 100;
+  var qty = (spend - fee) / price;
+  var pos = p.pos[id];
+  if(!pos){ pos = p.pos[id] = {sym:sym, qty:0, cost:0, last:price}; }
+  pos.qty += qty;
+  pos.cost += spend;
+  pos.last = price;
+  p.cash = Math.max(0, p.cash - spend);
+  p.log.unshift({t:Date.now(), side:"buy", id:id, sym:sym, qty:qty, price:price, amount:spend, fee:fee});
+  p.log = p.log.slice(0, 50);
+  return {ok:true, qty:qty, fee:fee};
+}
+function paperSell(p, id, fraction, price){
+  var pos = p.pos[id];
+  if(!pos || !(pos.qty > 0)) return {ok:false, msg:"Aucune position à vendre."};
+  if(!(fraction > 0 && fraction <= 1)) return {ok:false, msg:"Part à vendre invalide."};
+  if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
+  var qty = pos.qty * fraction;
+  var gross = qty * price;
+  var fee = gross * p.fee / 100;
+  var net = gross - fee;
+  var costPart = pos.cost * fraction;
+  var sym = pos.sym;
+  pos.qty -= qty;
+  pos.cost -= costPart;
+  pos.last = price;
+  p.cash += net;
+  p.log.unshift({t:Date.now(), side:"sell", id:id, sym:sym, qty:qty, price:price, amount:net, fee:fee, pnl:net - costPart});
+  p.log = p.log.slice(0, 50);
+  if(fraction >= 0.999999 || pos.qty <= 0) delete p.pos[id];
+  return {ok:true, net:net, fee:fee, pnl:net - costPart};
+}
+function paperValue(p, priceOf){
+  var total = p.cash;
+  Object.keys(p.pos).forEach(function(id){
+    var pos = p.pos[id];
+    var pr = priceOf(id);
+    if(!(pr > 0)) pr = pos.last;
+    total += pos.qty * pr;
+  });
+  return total;
+}
+/* PAPER-CORE-END */
+
 var DEFAULT = {
   cur: "chf",
   interval: 60,
+  exchange: "none",
+  paper: newPaper("chf", 300),
   tokens: [
     {sym:"MAGIC", id:"magic", alerts:mkAlerts()},
     {sym:"NIL",   id:"nillion", alerts:mkAlerts()},
@@ -135,15 +219,29 @@ var DEFAULT = {
   ]
 };
 
+var EXCHANGES = {
+  none:     {label:"Aucun"},
+  binance:  {label:"Binance",   url:function(s){ return "https://www.binance.com/en/trade/" + encodeURIComponent(s) + "_USDT"; }},
+  kraken:   {label:"Kraken",    url:function(s){ return "https://pro.kraken.com/app/trade/" + encodeURIComponent(s.toLowerCase()) + "-usd"; }},
+  coinbase: {label:"Coinbase",  url:function(s){ return "https://www.coinbase.com/advanced-trade/spot/" + encodeURIComponent(s) + "-USD"; }},
+  bitstamp: {label:"Bitstamp",  url:function(s){ return "https://www.bitstamp.net/markets/" + encodeURIComponent(s.toLowerCase()) + "/usd/"; }},
+  revolutx: {label:"Revolut X", url:function(){ return "https://exchange.revolut.com/"; }}
+};
+
 function load(){
+  var s = null;
   try{
     var raw = localStorage.getItem(LS_KEY);
     if(raw){
-      var s = JSON.parse(raw);
-      if(s && Array.isArray(s.tokens)) return s;
+      s = JSON.parse(raw);
+      if(!(s && Array.isArray(s.tokens))) s = null;
     }
-  }catch(e){}
-  return JSON.parse(JSON.stringify(DEFAULT));
+  }catch(e){ s = null; }
+  if(!s) s = JSON.parse(JSON.stringify(DEFAULT));
+  if(!s.paper || typeof s.paper.cash !== "number" || !s.paper.pos) s.paper = newPaper(s.cur, 300);
+  if(!Array.isArray(s.paper.log)) s.paper.log = [];
+  if(!EXCHANGES[s.exchange]) s.exchange = "none";
+  return s;
 }
 function save(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
@@ -161,6 +259,10 @@ var timer = null;
 var active = {};          // symbole -> liste de messages d'alerte en cours
 var firedKeys = {};       // clé d'alerte -> true (pour ne notifier qu'au passage)
 var openIds = {};         // détails ouverts
+var tradeUI = null;       // {id, side, amount, fraction}
+var flash = null;         // {text, t, kind}
+var resetAsk = false;
+var simStartDraft = null; // capital de départ en cours de saisie
 
 var $ = function(id){ return document.getElementById(id); };
 
@@ -168,6 +270,7 @@ function h(tag, props, children){
   var el = document.createElement(tag);
   if(props){
     Object.keys(props).forEach(function(k){
+      if(props[k] == null) return;   // une valeur nulle ne crée pas d'attribut (ex. disabled)
       if(k === "class") el.className = props[k];
       else if(k === "text") el.textContent = props[k];
       else if(k.indexOf("on") === 0) el.addEventListener(k.slice(2), props[k]);
@@ -190,6 +293,14 @@ function fmtPrice(v){
   else if(abs >= 1) opts = {maximumFractionDigits:2, minimumFractionDigits:2};
   else opts = {maximumSignificantDigits:4};
   return v.toLocaleString("fr-CH", opts);
+}
+function fmtMoney(v){
+  if(v == null || isNaN(v)) return "n/d";
+  return v.toLocaleString("fr-CH", {minimumFractionDigits:2, maximumFractionDigits:2});
+}
+function fmtQty(q){
+  if(!(q > 0)) return "0";
+  return q.toLocaleString("fr-CH", {maximumSignificantDigits: q >= 1000 ? 7 : 5});
 }
 function fmtBig(v){
   if(v == null || isNaN(v)) return "n/d";
@@ -216,6 +327,9 @@ function capLabel(mcap, cur){
 function timeStr(ts){
   var d = new Date(ts);
   return d.toLocaleTimeString("fr-CH",{hour:"2-digit", minute:"2-digit", second:"2-digit"});
+}
+function dateStr(ts){
+  return new Date(ts).toLocaleString("fr-CH",{day:"2-digit", month:"2-digit", hour:"2-digit", minute:"2-digit"});
 }
 
 /* ---------- API ---------- */
@@ -289,6 +403,7 @@ function refresh(){
     return Promise.all(jobs);
   }).then(function(){
     lastOk = Date.now(); failCount = 0; lastError = null;
+    rememberLastPrices();
     evaluateAlerts();
   }).catch(function(e){
     failCount++; lastError = describeError(e);
@@ -304,6 +419,20 @@ function schedule(){
   var mult = failCount ? Math.min(Math.pow(2, failCount), 5) : 1;
   timer = setTimeout(refresh, state.interval * 1000 * mult);
 }
+
+/* ---------- Simulation ---------- */
+function paperActive(){ return state.paper.cur === state.cur; }
+function priceOf(id){ var d = data[id]; return d && d.current_price > 0 ? d.current_price : null; }
+function rememberLastPrices(){
+  if(!paperActive()) return;
+  var changed = false;
+  Object.keys(state.paper.pos).forEach(function(id){
+    var pr = priceOf(id);
+    if(pr){ state.paper.pos[id].last = pr; changed = true; }
+  });
+  if(changed) save();
+}
+function setFlash(text, kind){ flash = {text:text, t:Date.now(), kind:kind || "ok"}; }
 
 /* ---------- Alertes ---------- */
 function evaluateAlerts(){
@@ -410,6 +539,91 @@ function alertField(t, key, label, value){
   return h("label", {for:id}, [label, input]);
 }
 
+/* ----- Panneau d'ordre simulé, dans la carte du jeton ----- */
+function tradePanel(t, d){
+  var p = state.paper;
+  var cur = CUR_SYMBOL[state.cur];
+  var price = d.current_price;
+  var box = h("div", {class:"trade"});
+  var preview = h("p", {class:"note", text:""});
+  var err = h("p", {class:"banner err", hidden:"hidden", text:""});
+
+  function showErr(msg){ err.textContent = msg; err.hidden = false; }
+  function done(msg){ setFlash(msg, "ok"); tradeUI = null; save(); render(); }
+
+  if(tradeUI.side === "buy"){
+    var amtId = "buy-" + t.sym;
+    var input = h("input", {id:amtId, type:"text", inputmode:"decimal", placeholder:"0,00", value: tradeUI.amount || ""});
+    var updateBuy = function(){
+      tradeUI.amount = input.value;
+      var s = numOrNull(input.value);
+      if(!s){ preview.textContent = "Entre un montant à dépenser."; return; }
+      var fee = s * p.fee / 100;
+      var qty = (s - fee) / price;
+      preview.textContent = "≈ " + fmtQty(qty) + " " + t.sym + " pour " + fmtMoney(s) + " " + cur + " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ")";
+    };
+    input.addEventListener("input", updateBuy);
+    var presets = h("div", {class:"presets"}, [25, 50, 100].map(function(pc){
+      return h("button", {type:"button", class:"btn small", onclick:function(){
+        var v = Math.floor(p.cash * pc) / 100;
+        input.value = String(v);
+        updateBuy();
+      }, text: pc === 100 ? "Tout le solde" : pc + " %"});
+    }));
+    box.appendChild(h("label", {for:amtId}, ["Montant à dépenser (" + cur + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur, input]));
+    box.appendChild(presets);
+    box.appendChild(preview);
+    box.appendChild(err);
+    box.appendChild(h("div", {class:"acts"}, [
+      h("button", {type:"button", class:"btn primary small", onclick:function(){
+        var s = numOrNull(input.value);
+        var r = paperBuy(p, t.id, t.sym, s, price);
+        if(!r.ok){ showErr(r.msg); return; }
+        done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(s) + " " + cur + ".");
+      }, text:"Confirmer l'achat (simulé)"}),
+      h("button", {type:"button", class:"btn small", onclick:function(){ tradeUI = null; render(); }, text:"Annuler"})
+    ]));
+    updateBuy();
+  } else {
+    var pos = p.pos[t.id];
+    if(!pos){ tradeUI = null; return null; }
+    if(!(tradeUI.fraction > 0)) tradeUI.fraction = 1;
+    var updateSell = function(){
+      var gross = pos.qty * tradeUI.fraction * price;
+      var fee = gross * p.fee / 100;
+      var cost = pos.cost * tradeUI.fraction;
+      var pnl = gross - fee - cost;
+      preview.textContent = "Vente de " + fmtQty(pos.qty * tradeUI.fraction) + " " + t.sym + " ≈ " + fmtMoney(gross - fee) + " " + cur +
+        " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ") · résultat ≈ " + (pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(pnl)) + " " + cur;
+    };
+    var btns = [];
+    var seg = h("div", {class:"presets"}, [0.25, 0.5, 0.75, 1].map(function(fr){
+      var b = h("button", {type:"button", class:"btn small", "aria-pressed": String(tradeUI.fraction === fr), onclick:function(){
+        tradeUI.fraction = fr;
+        btns.forEach(function(x){ x.b.style.outline = x.fr === fr ? "2px solid var(--accent)" : "none"; });
+        updateSell();
+      }, text: fr === 1 ? "Tout" : Math.round(fr * 100) + " %"});
+      if(tradeUI.fraction === fr) b.style.outline = "2px solid var(--accent)";
+      btns.push({b:b, fr:fr});
+      return b;
+    }));
+    box.appendChild(h("p", {class:"note", text:"Part de la position à vendre (simulation) :"}));
+    box.appendChild(seg);
+    box.appendChild(preview);
+    box.appendChild(err);
+    box.appendChild(h("div", {class:"acts"}, [
+      h("button", {type:"button", class:"btn primary small", onclick:function(){
+        var r = paperSell(p, t.id, tradeUI.fraction, price);
+        if(!r.ok){ showErr(r.msg); return; }
+        done("Vente simulée : " + fmtMoney(r.net) + " " + cur + " reçus (résultat " + (r.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(r.pnl)) + " " + cur + ").");
+      }, text:"Confirmer la vente (simulée)"}),
+      h("button", {type:"button", class:"btn small", onclick:function(){ tradeUI = null; render(); }, text:"Annuler"})
+    ]));
+    updateSell();
+  }
+  return box;
+}
+
 function card(t){
   var d = t.id ? data[t.id] : null;
   var hits = active[t.sym];
@@ -460,6 +674,41 @@ function card(t){
     parts.push(h("div", {class:"banner alert"}, hits.map(function(m){ return h("div", {text:"Alerte : " + m}); })));
   }
 
+  // Position simulée
+  var pos = t.id ? state.paper.pos[t.id] : null;
+  var simOk = paperActive();
+  if(pos && simOk){
+    var pr = priceOf(t.id) || pos.last;
+    var val = pos.qty * pr;
+    var pl = pos.cost > 0 ? (val / pos.cost - 1) * 100 : 0;
+    parts.push(h("div", {class:"simpos", text:"Simulation : " + fmtQty(pos.qty) + " " + t.sym + " · valeur ≈ " + fmtMoney(val) + " " + cur + " · " + fmtPct(pl) + " (frais inclus à l'achat)"}));
+  }
+
+  // Boutons
+  var acts = [];
+  var canTrade = !!(d && d.current_price > 0 && simOk);
+  acts.push(h("button", {type:"button", class:"btn small", disabled: canTrade ? null : "disabled", onclick:function(){
+    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "buy") ? null : {id:t.id, side:"buy", amount:"", fraction:1};
+    render();
+  }, text:"Acheter (simulé)"}));
+  acts.push(h("button", {type:"button", class:"btn small", disabled: (canTrade && pos) ? null : "disabled", onclick:function(){
+    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "sell") ? null : {id:t.id, side:"sell", amount:"", fraction:1};
+    render();
+  }, text:"Vendre (simulé)"}));
+  var ex = EXCHANGES[state.exchange];
+  if(ex && ex.url){
+    acts.push(h("a", {class:"btn small", href:ex.url(t.sym), target:"_blank", rel:"noopener noreferrer", text:"Trader sur " + ex.label + " ↗"}));
+  }
+  if(t.id){
+    acts.push(h("a", {class:"btn small", href:"https://www.coingecko.com/en/coins/" + encodeURIComponent(t.id), target:"_blank", rel:"noopener noreferrer", text:"Où acheter ↗"}));
+  }
+  parts.push(h("div", {class:"acts"}, acts));
+
+  if(tradeUI && tradeUI.id === t.id && d && d.current_price > 0 && simOk){
+    var tp = tradePanel(t, d);
+    if(tp) parts.push(tp);
+  }
+
   var a = t.alerts || mkAlerts();
   var det = h("details", {}, [
     h("summary", {text:"Alertes et gestion"}),
@@ -469,6 +718,11 @@ function card(t){
       alertField(t, "move", "Variation 24 h au-delà de (%)", a.move)
     ]),
     h("button", {type:"button", class:"remove", onclick:function(){
+      if(t.id && state.paper.pos[t.id]){
+        setFlash("Impossible de retirer " + t.sym + " : une position simulée est ouverte. Vends-la d'abord.", "err");
+        render();
+        return;
+      }
       state.tokens = state.tokens.filter(function(x){ return x !== t; });
       save(); evaluateAlerts(); render();
     }, text:"Retirer " + t.sym})
@@ -478,6 +732,97 @@ function card(t){
   parts.push(det);
 
   return h("li", {class:"card" + (hits ? " hit" : "")}, parts);
+}
+
+function renderPaper(){
+  var box = $("paper");
+  box.textContent = "";
+  var p = state.paper;
+  var cur = (p.cur === "chf" ? "CHF" : "$");
+  box.appendChild(h("h2", {}, ["Portefeuille simulé", h("span", {class:"tag", text:"argent fictif"})]));
+
+  if(flash && Date.now() - flash.t < 15000){
+    box.appendChild(h("div", {class:"banner " + (flash.kind === "err" ? "err" : "ok"), text:flash.text}));
+  }
+
+  if(!paperActive()){
+    box.appendChild(h("p", {class:"note", text:"Ce portefeuille est en " + cur + ". Repasse l'affichage en " + (p.cur === "chf" ? "CHF" : "USD") + " pour acheter ou vendre en simulation, ou réinitialise-le dans la devise actuelle."}));
+  } else {
+    var total = paperValue(p, priceOf);
+    var gain = total - p.start;
+    var gainPct = p.start > 0 ? gain / p.start * 100 : 0;
+    box.appendChild(h("div", {class:"stats"}, [
+      h("div", {class:"stat"}, [h("b", {text:fmtMoney(total) + " " + cur}), h("span", {text:"valeur totale"})]),
+      h("div", {class:"stat"}, [h("b", {text:fmtMoney(p.cash) + " " + cur}), h("span", {text:"solde disponible"})]),
+      h("div", {class:"stat"}, [h("b", {class:dir(gain), text:(gain >= 0 ? "+" : "−") + fmtMoney(Math.abs(gain)) + " " + cur}), h("span", {text:fmtPct(gainPct) + " depuis le départ"})])
+    ]));
+  }
+
+  // Historique
+  var hist = h("details", {}, [h("summary", {text:"Historique (" + p.log.length + ")"})]);
+  if(p.log.length){
+    var ul = h("ul", {class:"log"}, p.log.slice(0, 20).map(function(e){
+      var line = dateStr(e.t) + " · " + (e.side === "buy" ? "Achat " : "Vente ") + fmtQty(e.qty) + " " + e.sym + " à " + fmtPrice(e.price) + " " + cur +
+        " · " + fmtMoney(e.amount) + " " + cur + (e.side === "sell" && e.pnl != null ? " · résultat " + (e.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(e.pnl)) : "");
+      return h("li", {text:line});
+    }));
+    hist.appendChild(ul);
+  } else {
+    hist.appendChild(h("p", {class:"note", text:"Aucun ordre simulé pour l'instant."}));
+  }
+  box.appendChild(hist);
+
+  // Réglages
+  var startInput = h("input", {id:"sim-start", type:"text", inputmode:"decimal", value: simStartDraft != null ? simStartDraft : String(p.start)});
+  startInput.addEventListener("input", function(){ simStartDraft = startInput.value; });
+  var feeInput = h("input", {id:"sim-fee", type:"text", inputmode:"decimal", value:String(p.fee)});
+  feeInput.addEventListener("change", function(){
+    var v = parseFloat(String(feeInput.value).replace(",", "."));
+    if(!isNaN(v) && v >= 0 && v <= 10){ p.fee = v; save(); }
+    render();
+  });
+  var resetBlock;
+  if(resetAsk){
+    resetBlock = h("div", {class:"acts"}, [
+      h("span", {class:"note", text:"Effacer les positions et l'historique, et repartir avec " + fmtMoney(numOrNull(startInput.value) || p.start) + " " + (state.cur === "chf" ? "CHF" : "$") + " ?"}),
+      h("button", {type:"button", class:"btn small primary", onclick:function(){
+        var amt = numOrNull(startInput.value) || 300;
+        state.paper = newPaper(state.cur, amt);
+        resetAsk = false; tradeUI = null; simStartDraft = null;
+        setFlash("Portefeuille simulé réinitialisé.", "ok");
+        save(); render();
+      }, text:"Oui, réinitialiser"}),
+      h("button", {type:"button", class:"btn small", onclick:function(){ resetAsk = false; render(); }, text:"Annuler"})
+    ]);
+  } else {
+    resetBlock = h("button", {type:"button", class:"btn small", onclick:function(){ resetAsk = true; render(); }, text:"Réinitialiser le portefeuille"});
+  }
+  var settings = h("details", {}, [
+    h("summary", {text:"Réglages de la simulation"}),
+    h("div", {class:"settings"}, [
+      h("label", {for:"sim-start"}, ["Capital de départ (devise affichée)", startInput]),
+      h("label", {for:"sim-fee"}, ["Frais + écart simulés par ordre (%)", feeInput])
+    ]),
+    h("p", {class:"note", text:"Le capital s'applique à la prochaine réinitialisation. Les frais et l'écart rendent la simulation plus réaliste : sur les petites capitalisations, ils sont souvent supérieurs à 1 %."}),
+    resetBlock
+  ]);
+  box.appendChild(settings);
+}
+
+function renderExchange(){
+  var sel = $("exch");
+  if(sel.options.length === 0){
+    Object.keys(EXCHANGES).forEach(function(k){
+      var o = document.createElement("option");
+      o.value = k; o.textContent = EXCHANGES[k].label;
+      sel.appendChild(o);
+    });
+    sel.addEventListener("change", function(){
+      state.exchange = EXCHANGES[sel.value] ? sel.value : "none";
+      save(); render();
+    });
+  }
+  sel.value = state.exchange;
 }
 
 function render(){
@@ -494,14 +839,17 @@ function render(){
   // Ne pas écraser un champ en cours de saisie.
   var ae = document.activeElement;
   var list = $("list");
-  if(ae && list.contains(ae) && ae.tagName === "INPUT") return;
+  var paper = $("paper");
+  if(ae && ae.tagName === "INPUT" && (list.contains(ae) || paper.contains(ae))) return;
 
+  renderPaper();
   list.textContent = "";
   if(!state.tokens.length){
     list.appendChild(h("li", {class:"empty", text:"Aucun jeton suivi. Ajoute un symbole ci-dessous."}));
   } else {
     state.tokens.forEach(function(t){ list.appendChild(card(t)); });
   }
+  renderExchange();
   renderNotifRow();
 }
 
@@ -544,7 +892,7 @@ function setCur(c){
   state.tokens.forEach(function(t){
     if(t.alerts){ t.alerts.above = null; t.alerts.below = null; }
   });
-  firedKeys = {}; active = {}; data = {};
+  firedKeys = {}; active = {}; data = {}; tradeUI = null;
   save(); render(); refresh();
 }
 $("cur-chf").addEventListener("click", function(){ setCur("chf"); });
