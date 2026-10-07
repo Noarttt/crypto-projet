@@ -130,6 +130,12 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .wrow .mono{font-family:var(--mono); text-align:right; white-space:nowrap}
 .wrow .nm{min-width:0; overflow-wrap:anywhere}
 .whead{display:flex; justify-content:space-between; gap:10px; align-items:baseline}
+.brcards{display:flex; flex-direction:column; gap:8px}
+.brcard{border:1px solid var(--line); border-radius:10px; padding:6px 10px; background:var(--bg); text-align:left; font:inherit; color:inherit; cursor:pointer; display:flex; flex-direction:column; gap:1px}
+.brcard .big{font-size:.95rem; font-weight:600}
+.brcard.sel{border-color:var(--up); box-shadow:inset 0 0 0 1px var(--up)}
+.brcard.sel .note:first-child{color:var(--up); font-weight:700}
+.brdetail{display:flex; flex-direction:column; gap:4px}
 .brbest{border:1px solid var(--accent); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:6px; background:var(--bg)}
 .brbest .big{font-size:1.15rem; font-weight:600}
 .brlist{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
@@ -2237,11 +2243,23 @@ function renderBridge(){
       : "Choisi : le moins cher" + (pk.list.length > 1
           ? ((B.from === "ethereum" || B.to === "ethereum") ? ". Ethereum est concerné : le prix prime toujours sur la vitesse."
             : ". Aucun autre pont n'est à la fois plus de 20 % plus rapide et moins de 10 % plus cher.") : ".");
-    kids.push(h("div", {class:"brbest"}, [
-      h("div", {class:"note", text: manual ? "Pont choisi (manuel)" : "Pont recommandé"}),
-      h("div", {class:"big", text:b.b.name}),
-      h("div", {text:"Coût total ≈ " + fmtMoney(b.cost) + " $ (" + b.pct.toFixed(2) + " %) · frais du pont " + fmtMoney(b.fee) + " $ + gas de départ " + fmtMoney(b.gas) + " $"}),
-      h("div", {text:"Durée " + fmtDuration(b.time) + " · tu reçois ≈ " + fmtMoney(Math.max(0, B.amount - b.cost)) + " $"}),
+    function brCard(title, x, active, onclick){
+      var kidsC = [h("div", {class:"note", text:(active ? "✓ " : "") + title})];
+      if(x){
+        kidsC.push(h("div", {class:"big", text:x.b.name}));
+        kidsC.push(h("div", {class:"note", text:fmtMoney(x.cost) + " $ (" + x.pct.toFixed(2) + " %) · " + fmtDuration(x.time) + " · reçu ≈ " + fmtMoney(Math.max(0, B.amount - x.cost)) + " $"}));
+      } else {
+        kidsC.push(h("div", {class:"note", text:"Aucun pont choisi à la main : touche une ligne de la liste ci-dessous."}));
+      }
+      return h("button", {type:"button", class:"brcard" + (active ? " sel" : ""), "aria-pressed":String(!!active), onclick:onclick}, kidsC);
+    }
+    kids.push(h("div", {class:"brcards"}, [
+      brCard("Pont choisi (manuel)", manual, !!manual, function(){}),
+      brCard("Best option (automatique)", pk.best, !manual, function(){ choosePick("auto"); })
+    ]));
+    kids.push(h("div", {class:"brdetail"}, [
+      h("div", {class:"note", text:(manual ? "Pont choisi (manuel) : " : "Best option (automatique) : ") + b.b.name}),
+      h("div", {class:"note", text:"Coût total ≈ " + fmtMoney(b.cost) + " $ (" + b.pct.toFixed(2) + " %) · frais du pont " + fmtMoney(b.fee) + " $ + gas de départ " + fmtMoney(b.gas) + " $ · durée " + fmtDuration(b.time) + " · tu reçois ≈ " + fmtMoney(Math.max(0, B.amount - b.cost)) + " $"}),
       h("div", {class:"note", text:why}),
       b.live ? h("div", {class:"note", text:"Devis en direct, actualisé automatiquement."}) : h("div", {class:"note", text:"Estimation (pas encore de devis en direct pour ce pont)" + (b.b.est ? ", moins sûre que les autres." : ".")})
     ]));
