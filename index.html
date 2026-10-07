@@ -2062,7 +2062,7 @@ function showTab(name){
     b.setAttribute("aria-pressed", String(n === name));
   });
   if(name === "bridge") renderBridge();
-  if(name === "wallet"){ renderWallet(); walletRefresh(false); }
+  if(name === "wallet"){ renderWallet(); }
   window.scrollTo(0, 0);
 }
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
@@ -2571,10 +2571,6 @@ function renderWallet(){
     root.appendChild(h("section", {class:"panel"}, [h("h3", {style:"margin:0; font-size:.95rem", text:"Transférer depuis " + placeLabel(k)})].concat(transferForm(ch, chains, k))));
   }
 
-  // Portefeuilles réels en lecture seule, repliés
-  var box = h("div", {class:"view"});
-  renderRealWallets(box);
-  root.appendChild(h("details", {class:"panel"}, [h("summary", {style:"cursor:pointer; font-weight:600", text:"Portefeuilles réels (lecture seule)"}), box]));
 }
 /* Gas moyen d'un bridge au départ de cette blockchain : moyenne des devis en direct (route affichée dans l'onglet Bridge) si on en a, sinon ≈ 3 swaps (approbation + dépôt + messagerie éventuelle) */
 function bridgeGasUsd(k){
@@ -2689,77 +2685,6 @@ function transferForm(ch, chains, lockFrom){
     h("label", {class:"field", for:"tf-amt"}, ["Montant (USDC)", tfAmt]),
     h("label", {class:"field", for:"tf-drop"}, ["Gas à recevoir sur la blockchain d'arrivée (en $, vide = automatique)", dropIn]),
     info, h("div", {class:"acts"}, [go, mx]), msg];
-}
-function renderRealWallets(root){
-  // 2) Portefeuilles réels en lecture seule
-  var addrIn = h("input", {id:"w-addr", type:"text", placeholder:"Adresse publique (0x… ou Solana)", autocomplete:"off", autocapitalize:"none", autocorrect:"off", spellcheck:"false"});
-  var labIn = h("input", {id:"w-label", type:"text", placeholder:"Nom (facultatif)", autocomplete:"off"});
-  var note = h("p", {class:"note", text:"Colle l'adresse publique d'un portefeuille : l'app lit ses actifs sur chaque blockchain, en lecture seule. Ne saisis jamais de phrase secrète ni de clé privée."});
-  var form = h("form", {class:"add", style:"padding:0; border:0; background:none"}, [addrIn, labIn, h("button", {class:"btn primary", type:"submit", text:"Ajouter ce portefeuille"})]);
-  form.style.flexDirection = "column";
-  form.addEventListener("submit", function(ev){
-    ev.preventDefault();
-    var a = addrIn.value.trim(), k = walletKind(a);
-    if(!k){ note.textContent = "Adresse invalide : attendu 0x suivi de 40 caractères, ou une adresse Solana."; return; }
-    if(state.wallets.some(function(w){ return w.addr.toLowerCase() === a.toLowerCase(); })){ note.textContent = "Ce portefeuille est déjà dans la liste."; return; }
-    state.wallets.push({addr:a, kind:k, label:labIn.value.trim()});
-    save(); walletRefresh(true); renderWallet();
-  });
-  var total = 0, anyData = false;
-  var wKids = [h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Portefeuilles réels (lecture seule)"})]), form, note];
-  root.appendChild(h("section", {class:"panel"}, wKids));
-
-  state.wallets.forEach(function(w){
-    var d = WAL.data[w.addr], kids = [];
-    var wtotal = 0;
-    var title = (w.label ? w.label + " · " : "") + shortAddr(w.addr) + (w.kind === "evm" ? " (EVM)" : " (Solana)");
-    var rm = h("button", {type:"button", class:"remove", onclick:function(){
-      state.wallets = state.wallets.filter(function(x){ return x !== w; }); delete WAL.data[w.addr]; save(); renderWallet();
-    }, text:"Retirer ce portefeuille"});
-    if(!d){
-      kids.push(h("div", {class:"whead"}, [h("h3", {style:"margin:0; font-size:1rem", text:title})]));
-      kids.push(h("p", {class:"note", text: WAL.busy ? "Lecture des actifs…" : "Pas encore de données."}));
-    } else {
-      anyData = true;
-      var hidden = 0, noPrice = 0, groups = [];
-      d.chains.forEach(function(c){
-        var rows = [], cv = chainValue(c);
-        wtotal += cv;
-        var assets = (c.native && c.native.qty > 0 ? [c.native] : []).concat(c.tokens.slice().sort(function(a, b){ return (b.qty * (b.price || 0)) - (a.qty * (a.price || 0)); }));
-        assets.forEach(function(a){
-          var usd = a.price > 0 ? a.qty * a.price : null;
-          if(usd == null){ noPrice++; if(!WAL.showSmall) return; }
-          else if(usd < 1 && !WAL.showSmall){ hidden++; return; }
-          rows.push(assetRow(a));
-        });
-        if(!rows.length && !c.tokensUnsupported && cv === 0) return;
-        var g = [h("div", {class:"whead"}, [h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:chainLabel(c.chain)}), h("b", {class:"mono", text:fmtMoney(cv) + " $"})])].concat(rows);
-        if(c.tokensUnsupported) g.push(h("p", {class:"note", text:"Jetons non lus sur cette blockchain (monnaie native seulement)."}));
-        else if(!c.tokensKnown) g.push(h("p", {class:"note", text:"Lecture des jetons impossible pour l'instant sur cette blockchain."}));
-        groups.push(h("div", {class:"wgroup"}, g));
-      });
-      total += wtotal;
-      kids.push(h("div", {class:"whead"}, [h("h3", {style:"margin:0; font-size:1rem", text:title}), h("b", {class:"mono", text:fmtMoney(wtotal) + " $"})]));
-      if(!groups.length) kids.push(h("p", {class:"note", text:"Aucun actif trouvé sur les blockchains lues."}));
-      groups.forEach(function(g){ kids.push(g); });
-      if(hidden || noPrice) kids.push(h("p", {class:"note", text:(hidden ? hidden + " actif(s) de moins de 1 $ masqué(s)" : "") + (hidden && noPrice ? " · " : "") + (noPrice ? noPrice + " jeton(s) sans prix connu masqué(s)" : "") + ". Les jetons inconnus peuvent être des arnaques envoyées sans demande : ne les touche pas."}));
-      kids.push(h("p", {class:"note", text:"Données de " + timeStr(d.t) + "."}));
-    }
-    kids.push(rm);
-    root.appendChild(h("section", {class:"panel"}, kids));
-  });
-
-  if(state.wallets.length){
-    var tools = [h("button", {type:"button", class:"btn small", onclick:function(){ walletRefresh(true); }, text: WAL.busy ? "Actualisation…" : "Actualiser"}),
-      h("button", {type:"button", class:"btn small" + (WAL.showSmall ? " sel" : ""), "aria-pressed":String(WAL.showSmall), onclick:function(){ WAL.showSmall = !WAL.showSmall; renderWallet(); },
-        text: WAL.showSmall ? "Masquer les petits montants" : "Afficher tout (petits montants, sans prix)"})];
-    root.appendChild(h("section", {class:"panel"}, [
-      h("div", {class:"whead"}, [h("h3", {style:"margin:0; font-size:1rem", text:"Total des portefeuilles réels"}), h("b", {class:"mono", text:anyData ? fmtMoney(total) + " $" : "…"})]),
-      h("div", {class:"acts"}, tools),
-      WAL.msg ? h("p", {class:"banner err", text:WAL.msg}) : null
-    ]));
-  }
-  root.appendChild(h("p", {class:"note", text:"Les soldes sont lus avec des services publics (nœuds publicnode et Solana, Blockscout, DexScreener, CoinGecko) : ils voient l'adresse que tu colles. Les prix peuvent être décalés ou absents pour les jetons peu échangés. Jetons lus sur Ethereum, Base, Arbitrum, Optimism, Polygon et Solana ; sur BNB Chain et Avalanche, seule la monnaie native est lue. Information uniquement, pas un conseil d'investissement."}));
 }
 
 render();
