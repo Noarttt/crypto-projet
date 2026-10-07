@@ -824,7 +824,7 @@ function refreshGas(extra, maxAge){
   var ids = [];
   chains.forEach(function(c){ var g = GAS_CHAINS[c]; [g.coin, g.alt].forEach(function(x){ if(x && ids.indexOf(x) < 0) ids.push(x); }); });
   var cachedPx = (typeof WAL !== "undefined" && WAL.px && Date.now() - WAL.pxT < 70000) ? WAL.px : null;
-  var pxP = (cachedPx && ids.every(function(x){ return cachedPx[x]; })) ? Promise.resolve(cachedPx) : api("/simple/price?ids=" + encodeURIComponent(ids.join(",")) + "&vs_currencies=usd");
+  var pxP = (cachedPx && ids.every(function(x){ return cachedPx[x]; })) ? Promise.resolve(cachedPx) : nativePx(true);
   pxP.then(function(px){
     return Promise.all(chains.map(function(c){
       var g = GAS_CHAINS[c];
@@ -1137,6 +1137,7 @@ var RANGES = [
 // période choisie : t.range sur chaque jeton (conservée dans le stockage local, défaut "7j")
 var GT_PARAMS = {"1h":{tf:"minute", agg:1, limit:60}, "24h":{tf:"minute", agg:5, limit:288}, "7j":{tf:"hour", agg:1, limit:168},
   "1m":{tf:"hour", agg:1, limit:720}, "1a":{tf:"day", agg:1, limit:365}, "max":{tf:"day", agg:1, limit:1000}};
+var BN_KLINES = {"1h":{i:"1m", n:60}, "24h":{i:"5m", n:288}, "7j":{i:"1h", n:168}, "1m":{i:"1h", n:720}, "1a":{i:"1d", n:365}, "max":{i:"1w", n:1000}};
 var chartCache = {};    // id|période -> {t, prices, err}
 function rangeOf(k){ var f = null; for(var i = 0; i < RANGES.length; i++){ if(RANGES[i].k === k) return RANGES[i]; if(RANGES[i].k === "7j") f = RANGES[i]; } return f; }
 function downsample(a, n){
@@ -1162,7 +1163,15 @@ function loadChart(t, rg){
         return {prices: l.slice().reverse().map(function(x){ return [x[0] * 1000, parseFloat(x[4])]; })};
       });
   } else {
-    req = api("/coins/" + encodeURIComponent(id) + "/market_chart?vs_currency=" + state.cur + "&days=" + rg.days);
+    var cgReq = function(){ return api("/coins/" + encodeURIComponent(id) + "/market_chart?vs_currency=" + state.cur + "&days=" + rg.days); };
+    var bsym = String(t.sym || "").replace(/[^A-Za-z0-9]/g, "").toUpperCase(), BP = BN_KLINES[rg.k];
+    // Binance d'abord (historique par bougies, sans limite gênante) ; CoinGecko seulement si le jeton n'y est pas coté
+    req = (bsym && BP && state.cur === "usd")
+      ? extApi("https://data-api.binance.vision/api/v3", "Binance", "/klines?symbol=" + bsym + "USDT&interval=" + BP.i + "&limit=" + BP.n).then(function(rows){
+          if(!Array.isArray(rows) || rows.length < 2) throw new Error("klines");
+          return {prices: rows.map(function(x){ return [x[0], parseFloat(x[4])]; })};
+        }).catch(function(){ return cgReq(); })
+      : cgReq();
   }
   req.then(function(r){
       var pts = (r.prices || []);
@@ -2296,10 +2305,22 @@ function walletKind(a){
   if(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)) return "sol";
   return null;
 }
+/* Prix des monnaies natives : Binance d'abord (pas de limite gênante), CoinGecko en secours */
+var BN_NATIVE = {ETHUSDT:["ethereum"], BNBUSDT:["binancecoin"], POLUSDT:["polygon-ecosystem-token", "matic-network"], AVAXUSDT:["avalanche-2"], SOLUSDT:["solana"]};
 function nativePx(force){
   if(!force && WAL.px && Date.now() - WAL.pxT < 60000) return Promise.resolve(WAL.px);
-  return api("/simple/price?ids=ethereum,binancecoin,polygon-ecosystem-token,matic-network,avalanche-2,solana&vs_currencies=usd").then(function(j){
-    WAL.px = j; WAL.pxT = Date.now(); return j;
+  return extApi("https://data-api.binance.vision/api/v3", "Binance", "/ticker/price?symbols=" + encodeURIComponent(JSON.stringify(Object.keys(BN_NATIVE)))).then(function(list){
+    var m = {};
+    (Array.isArray(list) ? list : []).forEach(function(x){
+      var p = parseFloat(x.price);
+      if(p > 0 && BN_NATIVE[x.symbol]) BN_NATIVE[x.symbol].forEach(function(id){ m[id] = {usd:p}; });
+    });
+    if(!m.ethereum || !m.solana) throw new Error("binance");
+    WAL.px = m; WAL.pxT = Date.now(); return m;
+  }).catch(function(){
+    return api("/simple/price?ids=ethereum,binancecoin,polygon-ecosystem-token,matic-network,avalanche-2,solana&vs_currencies=usd").then(function(j){
+      WAL.px = j; WAL.pxT = Date.now(); return j;
+    });
   });
 }
 function nativePrice(chain, px){
