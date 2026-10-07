@@ -643,64 +643,142 @@ function loadChart(id, rg){
       render();
     });
 }
-/* Flux en direct (une valeur par seconde) via le WebSocket public de Binance, paire SYMBOLE/USDT.
-   Fonctionne uniquement pour les jetons cotés sur Binance ; sinon un message l'indique. */
-var LIVE = {ws:null, key:"", buf:{}, last:{}, els:{}, since:0};
-function liveSyms(){
-  var o = {};
-  state.tokens.forEach(function(t){ if(t.range === "live") o[t.sym.toLowerCase().replace(/[^a-z0-9]/g, "")] = 1; });
-  return Object.keys(o).sort();
+/* Flux en direct (une valeur par seconde). Pour chaque jeton, l'app essaie dans l'ordre les WebSocket publics de
+   Binance, Bybit, OKX et Gate.io (paire SYMBOLE/USDT), puis, en dernier recours, les prix des échanges
+   décentralisés via DexScreener (interrogé toutes les 2 s, à partir de l'adresse du contrat donnée par CoinGecko). */
+var LIVE = {feeds:{}, buf:{}, last:{}, els:{}, src:{}, state:{}};
+function symKey(sym){ return sym.toLowerCase().replace(/[^a-z0-9]/g, ""); }
+var LIVE_SOURCES = [
+  {name:"Binance", ws:function(S){ return "wss://stream.binance.com:9443/ws/" + S.toLowerCase() + "usdt@trade"; },
+    sub:null, px:function(m){ return m && m.p ? [m.p] : []; }},
+  {name:"Bybit", ws:function(){ return "wss://stream.bybit.com/v5/public/spot"; },
+    sub:function(S){ return {op:"subscribe", args:["publicTrade." + S + "USDT"]}; },
+    px:function(m){ return (m && m.data && m.data.map) ? m.data.map(function(x){ return x.p; }) : []; }},
+  {name:"OKX", ws:function(){ return "wss://ws.okx.com:8443/ws/v5/public"; },
+    sub:function(S){ return {op:"subscribe", args:[{channel:"trades", instId:S + "-USDT"}]}; },
+    px:function(m){ return (m && m.data && m.data.map && m.arg) ? m.data.map(function(x){ return x.px; }) : []; }},
+  {name:"Gate.io", ws:function(){ return "wss://api.gateio.ws/ws/v4/"; },
+    sub:function(S){ return {time:Math.floor(Date.now() / 1000), channel:"spot.trades", event:"subscribe", payload:[S + "_USDT"]}; },
+    px:function(m){ return (m && m.event === "update" && m.result && m.result.price) ? [m.result.price] : []; }}
+];
+function liveTick(symk, S, px, srcName){
+  px = parseFloat(px);
+  var now = Date.now();
+  if(!(px > 0) || now - (LIVE.last[S] || 0) < 1000) return;
+  LIVE.last[S] = now;
+  LIVE.src[symk] = srcName;
+  var b = LIVE.buf[S] || (LIVE.buf[S] = []);
+  b.push([now, px]);
+  if(b.length > 600) b.shift();
+  liveFill(symk);
 }
-function liveFill(sym){
-  var el = LIVE.els[sym];
+function liveFill(symk){
+  var el = LIVE.els[symk];
   if(!el) return;
-  var b = LIVE.buf[sym.toUpperCase()] || [];
+  var S = symk.toUpperCase();
+  var b = LIVE.buf[S] || [];
   var prices = b.map(function(x){ return x[1]; });
   var chg = (prices.length > 1 && prices[0] > 0) ? (prices[prices.length - 1] / prices[0] - 1) * 100 : null;
   while(el.firstChild) el.removeChild(el.firstChild);
   el.appendChild(sparkline(prices, dir(chg), "direct (1 s)"));
   var msg;
+  var st = LIVE.state[symk];
   if(prices.length){
-    msg = h("div", {class:"note"}, ["Direct Binance (" + sym.toUpperCase() + "/USDT) : " + fmtPrice(prices[prices.length - 1]) + " USD · " + prices.length + " points (≈ " + prices.length + " s)" + (chg != null ? " · " : ""),
+    msg = h("div", {class:"note"}, ["Direct · source : " + (LIVE.src[symk] || "?") + " · " + fmtPrice(prices[prices.length - 1]) + " USD · " + prices.length + " points" + (chg != null ? " · " : ""),
       chg != null ? h("b", {class:dir(chg), text:fmtPct(chg)}) : null]);
-  } else if(LIVE.since && Date.now() - LIVE.since > 8000){
-    msg = h("div", {class:"note", text:"Aucun flux en direct pour " + sym.toUpperCase() + " : ce jeton n'est probablement pas coté en USDT sur Binance. Choisis une autre période."});
+  } else if(st === "none"){
+    msg = h("div", {class:"note", text:"Aucun flux en direct trouvé pour " + S + " (ni Binance, Bybit, OKX, Gate.io, ni échanges décentralisés). Choisis une autre période."});
   } else {
-    msg = h("div", {class:"note", text:"Connexion au flux en direct…"});
+    msg = h("div", {class:"note", text:"Recherche d'un flux en direct pour " + S + (st ? " (essai : " + st + ")" : "") + "…"});
   }
   el.appendChild(msg);
 }
-function liveAll(){ Object.keys(LIVE.els).forEach(liveFill); }
+function startFeed(tok){
+  var symk = symKey(tok.sym), S = symk.toUpperCase();
+  var feed = {stopped:false, ws:null, timer:null, poll:null, idx:-1, got:false};
+  LIVE.feeds[symk] = feed;
+  function cleanup(){
+    if(feed.timer){ clearTimeout(feed.timer); feed.timer = null; }
+    if(feed.poll){ clearInterval(feed.poll); feed.poll = null; }
+    if(feed.ws){ var w = feed.ws; feed.ws = null; w.onclose = w.onmessage = w.onerror = w.onopen = null; try{ w.close(); }catch(e){} }
+  }
+  feed.stop = function(){ feed.stopped = true; cleanup(); };
+  function next(){
+    if(feed.stopped) return;
+    cleanup();
+    feed.idx++; feed.got = false;
+    if(feed.idx < LIVE_SOURCES.length) openWs(LIVE_SOURCES[feed.idx]);
+    else if(feed.idx === LIVE_SOURCES.length) startDex();
+    else { LIVE.state[symk] = "none"; liveFill(symk); }
+  }
+  function openWs(src){
+    LIVE.state[symk] = src.name; liveFill(symk);
+    if(typeof WebSocket === "undefined"){ next(); return; }
+    var ws;
+    try{ ws = new WebSocket(src.ws(S)); }catch(e){ next(); return; }
+    feed.ws = ws;
+    feed.timer = setTimeout(function(){ if(!feed.got) next(); }, 7000);
+    ws.onopen = function(){ if(src.sub){ try{ ws.send(JSON.stringify(src.sub(S))); }catch(e){} } };
+    ws.onmessage = function(ev){
+      var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+      var pxs = src.px(m);
+      if(!pxs || !pxs.length) return;
+      feed.got = true;
+      if(feed.timer){ clearTimeout(feed.timer); feed.timer = null; }
+      liveTick(symk, S, pxs[pxs.length - 1], src.name);
+    };
+    ws.onerror = function(){ try{ ws.close(); }catch(e){} };
+    ws.onclose = function(){
+      if(feed.ws !== ws || feed.stopped) return;
+      feed.ws = null;
+      if(!feed.got){ next(); return; }
+      feed.timer = setTimeout(function(){ if(!feed.stopped) openWs(src); }, 3000);
+    };
+  }
+  function startDex(){
+    LIVE.state[symk] = "échanges décentralisés"; liveFill(symk);
+    if(!tok.id){ next(); return; }
+    function begin(addr){
+      if(feed.stopped) return;
+      if(!addr){ next(); return; }
+      var inflight = false, fails = 0;
+      function pollOnce(){
+        if(inflight || feed.stopped) return;
+        inflight = true;
+        fetch("https://api.dexscreener.com/latest/dex/tokens/" + encodeURIComponent(addr), {headers:{accept:"application/json"}})
+          .then(function(r){ if(!r.ok) throw new Error("http " + r.status); return r.json(); })
+          .then(function(j){
+            inflight = false;
+            var pairs = (j && j.pairs || []).filter(function(p){ return p.priceUsd && p.baseToken && p.baseToken.address && p.baseToken.address.toLowerCase() === addr.toLowerCase(); });
+            pairs.sort(function(a, b){ return ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0); });
+            if(!pairs.length){ if(++fails > 3 && !feed.got) next(); return; }
+            feed.got = true;
+            liveTick(symk, S, pairs[0].priceUsd, "DexScreener (" + pairs[0].dexId + ", " + pairs[0].chainId + ")");
+          }, function(){ inflight = false; if(++fails > 3 && !feed.got) next(); });
+      }
+      pollOnce();
+      feed.poll = setInterval(pollOnce, 2000);
+    }
+    if(tok.addr){ begin(tok.addr); return; }
+    api("/coins/" + encodeURIComponent(tok.id) + "?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false&sparkline=false")
+      .then(function(r){
+        var pl = (r && r.platforms) || {}, addr = null;
+        Object.keys(pl).forEach(function(k){ if(!addr && pl[k]) addr = pl[k]; });
+        if(addr){ tok.addr = addr; save(); }
+        begin(addr);
+      }, function(){ next(); });
+  }
+  next();
+}
 function syncLive(){
-  var syms = liveSyms(), key = syms.join(",");
-  if(key === LIVE.key && (LIVE.ws || !key)) return;
-  if(LIVE.ws){ var old = LIVE.ws; LIVE.ws = null; try{ old.close(); }catch(e){} }
-  LIVE.key = key;
-  if(!key || typeof WebSocket === "undefined") return;
-  var ws;
-  try{
-    ws = new WebSocket("wss://stream.binance.com:9443/stream?streams=" + syms.map(function(x){ return x + "usdt@trade"; }).join("/"));
-  }catch(e){ return; }
-  LIVE.ws = ws;
-  LIVE.since = Date.now();
-  setTimeout(liveAll, 8500);
-  ws.onmessage = function(ev){
-    var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
-    var d = m && m.data;
-    if(!d || !d.s) return;
-    var base = d.s.replace(/USDT$/, "");
-    var now = Date.now(), px = parseFloat(d.p);
-    if(!(px > 0) || now - (LIVE.last[base] || 0) < 1000) return;
-    LIVE.last[base] = now;
-    var b = LIVE.buf[base] || (LIVE.buf[base] = []);
-    b.push([now, px]);
-    if(b.length > 600) b.shift();
-    liveFill(base.toLowerCase());
-  };
-  ws.onclose = function(){
-    if(LIVE.ws === ws){ LIVE.ws = null; setTimeout(syncLive, 3000); }
-  };
-  ws.onerror = function(){ try{ ws.close(); }catch(e){} };
+  var want = {};
+  state.tokens.forEach(function(t){ if(t.range === "live") want[symKey(t.sym)] = t; });
+  Object.keys(LIVE.feeds).forEach(function(k){
+    if(!want[k]){ LIVE.feeds[k].stop(); delete LIVE.feeds[k]; }
+  });
+  Object.keys(want).forEach(function(k){
+    if(!LIVE.feeds[k]) startFeed(want[k]);
+  });
 }
 function chartBlock(t, d){
   var k = t.range || "7j";
@@ -708,7 +786,7 @@ function chartBlock(t, d){
   var rg = rangeOf(k);
   var prices, note = "", stat = null;
   if(rg.live){
-    var symk = t.sym.toLowerCase().replace(/[^a-z0-9]/g, "");
+    var symk = symKey(t.sym);
     var box = h("div", {class:"chartbox"}, []);
     var live = h("div", {class:"chartbox"}, []);
     LIVE.els[symk] = live;
