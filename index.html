@@ -115,7 +115,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .field{display:flex; flex-direction:column; gap:4px; font-size:.82rem; color:var(--muted)}
 .add{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px}
 .add form{display:flex; gap:8px}
-.add input{flex:1; min-width:0; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--bg); text-transform:uppercase}
+.add input{flex:1; min-width:0; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--bg)}
 .cands{display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none}
 .cands button{width:100%; text-align:left; border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:8px 10px}
 .note{font-size:.8rem; color:var(--muted); margin:0}
@@ -141,7 +141,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   <ul class="list" id="list"></ul>
   <section class="add" aria-label="Ajouter un jeton">
     <form id="add-form">
-      <input id="add-sym" type="text" placeholder="Symbole (ex. GRT)" autocomplete="off" autocapitalize="characters" maxlength="12" aria-label="Symbole du jeton">
+      <input id="add-sym" type="text" placeholder="Symbole, nom ou adresse de contrat" autocomplete="off" autocapitalize="none" autocorrect="off" spellcheck="false" aria-label="Symbole, nom ou adresse de contrat du jeton">
       <button class="btn primary" type="submit">Chercher</button>
     </form>
     <ul class="cands" id="cands"></ul>
@@ -154,7 +154,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
     <p class="note">Le bouton « Trader sur… » ouvre la page de l'exchange pour ce jeton. L'ordre se passe et se confirme là-bas : cette application ne stocke aucune clé et ne passe aucun ordre réel. Vérifie toujours que le jeton y est bien coté.</p>
   </section>
   <p class="note" id="notif-row"></p>
-  <p class="note">Cours fournis par l'API publique de CoinGecko, avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. La simulation utilise de l'argent fictif aux prix affichés, avec des frais et un écart simulés : en réel, sur les petites capitalisations, l'écart entre achat et vente et le glissement sont souvent plus grands. Information uniquement : ce n'est pas un conseil d'investissement.</p>
+  <p class="note">Cours fournis par l'API publique de CoinGecko et, pour les jetons des échanges décentralisés, par DexScreener (historique : GeckoTerminal), avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. La simulation utilise de l'argent fictif aux prix affichés, avec des frais et un écart simulés : en réel, sur les petites capitalisations, l'écart entre achat et vente et le glissement sont souvent plus grands. Information uniquement : ce n'est pas un conseil d'investissement.</p>
 </main>
 <script>
 (function(){
@@ -376,11 +376,45 @@ function api(path){
     }, function(e){ clearTimeout(to); throw e; });
 }
 function describeError(e){
-  if(e && e.status === 429) return "CoinGecko limite le nombre de requêtes (erreur 429). Nouvelle tentative automatique, plus espacée.";
-  if(e && e.name === "AbortError") return "CoinGecko ne répond pas (délai dépassé).";
-  if(e && e.status) return "CoinGecko a répondu avec une erreur (" + e.status + ").";
-  return "Impossible de joindre CoinGecko. Vérifie ta connexion.";
+  var who = (e && e.who) || "CoinGecko";
+  if(e && e.status === 429) return who + " limite le nombre de requêtes (erreur 429). Nouvelle tentative automatique, plus espacée.";
+  if(e && e.name === "AbortError") return who + " ne répond pas (délai dépassé).";
+  if(e && e.status) return who + " a répondu avec une erreur (" + e.status + ").";
+  return "Impossible de joindre " + who + ". Vérifie ta connexion.";
 }
+/* ----- DexScreener (jetons sur échanges décentralisés) et GeckoTerminal (historique) ----- */
+function extApi(base, who, path){
+  var ctrl = new AbortController();
+  var to = setTimeout(function(){ ctrl.abort(); }, 15000);
+  return fetch(base + path, {signal:ctrl.signal, headers:{accept:"application/json"}})
+    .then(function(r){
+      clearTimeout(to);
+      if(!r.ok){ var e = new Error("http " + r.status); e.status = r.status; e.who = who; throw e; }
+      return r.json();
+    }, function(e){ clearTimeout(to); e.who = who; throw e; });
+}
+function dexApi(path){ return extApi("https://api.dexscreener.com/latest/dex", "DexScreener", path); }
+function dexIdOf(chain, pair){ return "dex:" + chain + ":" + pair; }
+function dexRow(p, id){
+  var ch = p.priceChange && p.priceChange.h24;
+  return {
+    id:id, name:(p.baseToken && p.baseToken.name) || "", symbol:(p.baseToken && p.baseToken.symbol) || "",
+    current_price:parseFloat(p.priceUsd),
+    market_cap:p.marketCap || p.fdv || null,
+    total_volume:(p.volume && p.volume.h24) || null,
+    price_change_percentage_24h: ch == null ? null : ch,
+    price_change_percentage_7d_in_currency:null,
+    sparkline_in_7d:null, market_cap_rank:null,
+    dex:true, chain:p.chainId, dexId:p.dexId, pairAddress:p.pairAddress, url:p.url || null,
+    liquidity_usd:(p.liquidity && p.liquidity.usd) || null
+  };
+}
+function fmtLiq(v){ return v == null ? "liquidité inconnue" : "liquidité " + fmtBig(v) + " USD"; }
+function shortAddr(a){ return a && a.length > 12 ? a.slice(0, 5) + "…" + a.slice(-4) : (a || ""); }
+function looksLikeAddress(q){ return /^0x[a-fA-F0-9]{40}$/.test(q) || /^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(q); }
+var GT_NET = {ethereum:"eth", bsc:"bsc", solana:"solana", base:"base", arbitrum:"arbitrum", polygon:"polygon_pos",
+  avalanche:"avax", optimism:"optimism", fantom:"ftm", cronos:"cro", linea:"linea", blast:"blast", sui:"sui-network",
+  ton:"ton", zksync:"zksync", scroll:"scroll", mantle:"mantle", pulsechain:"pulsechain", sonic:"sonic", abstract:"abstract"};
 function searchSymbol(sym){
   return api("/search?query=" + encodeURIComponent(sym)).then(function(j){
     var s = sym.toLowerCase();
@@ -414,18 +448,39 @@ function refresh(){
   var reqCur = state.cur;
   setStatus();
   return resolvePending().then(function(){
-    var ids = state.tokens.filter(function(t){ return t.id; }).map(function(t){ return t.id; });
+    var ids = state.tokens.filter(function(t){ return t.id && !t.dex; }).map(function(t){ return t.id; });
     var jobs = [];
+    var dexRows = {};
     if(ids.length){
       jobs.push(api("/coins/markets?vs_currency=" + state.cur + "&ids=" + encodeURIComponent(ids.join(",")) +
         "&sparkline=true&price_change_percentage=24h,7d&per_page=100").then(function(rows){
           if(reqCur !== state.cur) return;   // devise changée pendant la requête : on jette ces chiffres
           var next = {};
           rows.forEach(function(r){ next[r.id] = r; });
+          Object.keys(data).forEach(function(k){ if(k.indexOf("dex:") === 0) next[k] = data[k]; });
           data = next;
         }));
     }
-    return Promise.all(jobs);
+    var byChain = {};
+    state.tokens.forEach(function(t){ if(t.dex){ (byChain[t.dex.chain] = byChain[t.dex.chain] || []).push(t); } });
+    Object.keys(byChain).forEach(function(chain){
+      var toks = byChain[chain];
+      for(var i = 0; i < toks.length; i += 30){
+        (function(group){
+          jobs.push(dexApi("/pairs/" + encodeURIComponent(chain) + "/" + group.map(function(t){ return encodeURIComponent(t.dex.pair); }).join(","))
+            .then(function(j){
+              (j.pairs || (j.pair ? [j.pair] : [])).forEach(function(p){
+                group.forEach(function(t){
+                  if(p.pairAddress && p.pairAddress.toLowerCase() === t.dex.pair.toLowerCase() && p.priceUsd) dexRows[t.id] = dexRow(p, t.id);
+                });
+              });
+            }));
+        })(toks.slice(i, i + 30));
+      }
+    });
+    return Promise.all(jobs).then(function(){
+      Object.keys(dexRows).forEach(function(k){ data[k] = dexRows[k]; });
+    });
   }).then(function(){
     lastOk = Date.now(); failCount = 0; lastError = null;
     rememberLastPrices();
@@ -616,6 +671,8 @@ var RANGES = [
   {k:"max",  label:"Tout",  days:"max"}
 ];
 // période choisie : t.range sur chaque jeton (conservée dans le stockage local, défaut "7j")
+var GT_PARAMS = {"1h":{tf:"minute", agg:1, limit:60}, "24h":{tf:"minute", agg:5, limit:288}, "7j":{tf:"hour", agg:1, limit:168},
+  "1m":{tf:"hour", agg:1, limit:720}, "1a":{tf:"day", agg:1, limit:365}, "max":{tf:"day", agg:1, limit:1000}};
 var chartCache = {};    // id|période -> {t, prices, err}
 function rangeOf(k){ var f = null; for(var i = 0; i < RANGES.length; i++){ if(RANGES[i].k === k) return RANGES[i]; if(RANGES[i].k === "7j") f = RANGES[i]; } return f; }
 function downsample(a, n){
@@ -624,13 +681,26 @@ function downsample(a, n){
   for(var i = 0; i < n; i++) out.push(a[Math.round(i * (a.length - 1) / (n - 1))]);
   return out;
 }
-function loadChart(id, rg){
+function loadChart(t, rg){
+  var id = t.id;
   var key = id + "|" + rg.k;
   var c = chartCache[key];
   if(c && (c.loading || Date.now() - c.t < (c.err ? 60000 : 300000))) return;
   chartCache[key] = {t:Date.now(), loading:true, prices:(c && c.prices) || null};
-  api("/coins/" + encodeURIComponent(id) + "/market_chart?vs_currency=" + state.cur + "&days=" + rg.days)
-    .then(function(r){
+  var req;
+  if(t.dex){
+    var net = GT_NET[t.dex.chain], P = GT_PARAMS[rg.k];
+    if(!net || !P){ chartCache[key] = {t:Date.now(), err:"Graphique de cette période indisponible pour la blockchain « " + t.dex.chain + " »."}; return; }
+    req = extApi("https://api.geckoterminal.com/api/v2", "GeckoTerminal",
+      "/networks/" + net + "/pools/" + encodeURIComponent(t.dex.pair) + "/ohlcv/" + P.tf + "?aggregate=" + P.agg + "&limit=" + P.limit + "&currency=usd&token=base")
+      .then(function(j){
+        var l = (j && j.data && j.data.attributes && j.data.attributes.ohlcv_list) || [];
+        return {prices: l.slice().reverse().map(function(x){ return [x[0] * 1000, parseFloat(x[4])]; })};
+      });
+  } else {
+    req = api("/coins/" + encodeURIComponent(id) + "/market_chart?vs_currency=" + state.cur + "&days=" + rg.days);
+  }
+  req.then(function(r){
       var pts = (r.prices || []);
       if(rg.cut && pts.length){
         var last = pts[pts.length - 1][0];
@@ -695,7 +765,7 @@ function liveFill(symk){
 }
 function startFeed(tok){
   var symk = symKey(tok.sym), S = symk.toUpperCase();
-  var feed = {stopped:false, ws:null, timer:null, poll:null, idx:-1, got:false};
+  var feed = {stopped:false, ws:null, timer:null, poll:null, idx: tok.dex ? LIVE_SOURCES.length - 1 : -1, got:false};
   LIVE.feeds[symk] = feed;
   function cleanup(){
     if(feed.timer){ clearTimeout(feed.timer); feed.timer = null; }
@@ -737,6 +807,25 @@ function startFeed(tok){
   }
   function startDex(){
     LIVE.state[symk] = "échanges décentralisés"; liveFill(symk);
+    if(tok.dex){
+      var inf = false, bad = 0;
+      var pollPair = function(){
+        if(inf || feed.stopped) return;
+        inf = true;
+        fetch("https://api.dexscreener.com/latest/dex/pairs/" + encodeURIComponent(tok.dex.chain) + "/" + encodeURIComponent(tok.dex.pair), {headers:{accept:"application/json"}})
+          .then(function(r){ if(!r.ok) throw new Error("http " + r.status); return r.json(); })
+          .then(function(j){
+            inf = false;
+            var p = (j.pairs && j.pairs[0]) || j.pair;
+            if(!p || !p.priceUsd){ if(++bad > 3 && !feed.got) next(); return; }
+            feed.got = true;
+            liveTick(symk, S, p.priceUsd, "DexScreener (" + p.dexId + ", " + p.chainId + ")");
+          }, function(){ inf = false; if(++bad > 3 && !feed.got) next(); });
+      };
+      pollPair();
+      feed.poll = setInterval(pollPair, 2000);
+      return;
+    }
     if(!tok.id){ next(); return; }
     function begin(addr){
       if(feed.stopped) return;
@@ -799,10 +888,10 @@ function chartBlock(t, d){
     liveFill(symk);
     return box;
   }
-  if(k === "7j"){
+  if(k === "7j" && !t.dex){
     prices = d.sparkline_in_7d && d.sparkline_in_7d.price;
   } else {
-    loadChart(t.id, rg);
+    loadChart(t, rg);
     var c = chartCache[t.id + "|" + k];
     prices = c && c.prices;
     if(c && c.loading && !prices) note = "Chargement du graphique…";
@@ -1003,6 +1092,12 @@ function card(t){
     var cl = capLabel(d.market_cap, state.cur);
     if(cl) chips.push(h("span", {class:"chip", text:cl}));
     if(d.market_cap_rank) chips.push(h("span", {class:"chip", text:"rang #" + d.market_cap_rank}));
+    if(d.dex){
+      chips.push(h("span", {class:"chip", text:"DEX · " + d.chain}));
+      var lowLiq = d.liquidity_usd == null || d.liquidity_usd < 100000;
+      chips.push(h("span", {class:"chip" + (lowLiq ? " warn" : ""),
+        text: d.liquidity_usd == null ? "liquidité inconnue" : (lowLiq ? "liquidité faible : " : "liquidité ") + fmtBig(d.liquidity_usd) + " USD"}));
+    }
     if(d.market_cap && d.total_volume != null && d.total_volume / d.market_cap < 0.02)
       chips.push(h("span", {class:"chip warn", text:"peu d'échanges"}));
   }
@@ -1034,7 +1129,8 @@ function card(t){
     var p7 = d.price_change_percentage_7d_in_currency;
     parts.push(chartBlock(t, d));
     parts.push(h("div", {class:"stats"}, [
-      h("div", {class:"stat"}, [h("b", {class:dir(p7), text:fmtPct(p7)}), h("span", {text:"7 jours"})]),
+      d.dex ? h("div", {class:"stat"}, [h("b", {text:d.liquidity_usd == null ? "n/d" : fmtBig(d.liquidity_usd) + " " + cur}), h("span", {text:"liquidité"})])
+        : h("div", {class:"stat"}, [h("b", {class:dir(p7), text:fmtPct(p7)}), h("span", {text:"7 jours"})]),
       h("div", {class:"stat"}, [h("b", {text:fmtBig(d.market_cap) + " " + cur}), h("span", {text:"capitalisation"})]),
       h("div", {class:"stat"}, [h("b", {text:fmtBig(d.total_volume) + " " + cur}), h("span", {text:"volume 24 h"})])
     ]));
@@ -1058,15 +1154,20 @@ function card(t){
   var acts = [];
   var canTrade = !!(d && d.current_price > 0 && simOk);
   var ex = EXCHANGES[state.exchange];
-  if(ex && ex.url){
+  if(ex && ex.url && !t.dex){
     acts.push(h("a", {class:"btn small", href:ex.url(t.sym), target:"_blank", rel:"noopener noreferrer", text:"Trader sur " + ex.label + " ↗"}));
   }
-  if(t.id){
+  if(t.dex){
+    acts.push(h("a", {class:"btn small", href:"https://dexscreener.com/" + encodeURIComponent(t.dex.chain) + "/" + encodeURIComponent(t.dex.pair), target:"_blank", rel:"noopener noreferrer", text:"DexScreener ↗"}));
+  } else if(t.id){
     acts.push(h("a", {class:"btn small", href:"https://www.coingecko.com/en/coins/" + encodeURIComponent(t.id), target:"_blank", rel:"noopener noreferrer", text:"Où acheter ↗"}));
   }
   if(canTrade){
     var tp = tradePanel(t, d);
     if(tp) parts.push(tp);
+  }
+  if(t.dex && d){
+    parts.push(h("p", {class:"note", text:"Jeton sur échange décentralisé : le prix vient de la paire " + (d.dexId || "") + " (" + (d.chain || t.dex.chain) + "). Le prix réellement obtenu dépend de la liquidité et de la taille de l'ordre ; les frais simulés de 1 % sont souvent trop bas ici. Vérifie le contrat (" + shortAddr(t.dex.addr || "") + ") : des copies frauduleuses existent."}));
   }
   parts.push(h("div", {class:"acts"}, acts));
 
@@ -1217,9 +1318,24 @@ function render(){
 }
 
 /* ---------- Ajout de jetons ---------- */
-function renderCands(items){
+function renderCands(items, dexPairs){
   var ul = $("cands");
   ul.textContent = "";
+  (dexPairs || []).forEach(function(p){
+    var id = dexIdOf(p.chainId, p.pairAddress);
+    var label = "DEX · " + p.baseToken.symbol.toUpperCase() + " (" + p.baseToken.name + ") · " + p.chainId + "/" + p.dexId +
+      " · " + fmtLiq(p.liquidity && p.liquidity.usd) + " · contrat " + shortAddr(p.baseToken.address);
+    ul.appendChild(h("li", {}, [h("button", {type:"button", onclick:function(){
+      if(!state.tokens.some(function(t){ return t.id === id; })){
+        state.tokens.push({sym:p.baseToken.symbol.toUpperCase(), id:id, name:p.baseToken.name, alerts:mkAlerts(),
+          dex:{chain:p.chainId, pair:p.pairAddress, addr:p.baseToken.address}});
+        save();
+      }
+      ul.textContent = "";
+      $("add-sym").value = "";
+      refresh();
+    }, text:label})]));
+  });
   items.forEach(function(c){
     var label = c.name + " (" + c.symbol.toUpperCase() + ")" + (c.market_cap_rank ? " · rang #" + c.market_cap_rank : " · sans rang");
     ul.appendChild(h("li", {}, [h("button", {type:"button", onclick:function(){
@@ -1236,15 +1352,34 @@ function renderCands(items){
 
 $("add-form").addEventListener("submit", function(ev){
   ev.preventDefault();
-  var sym = $("add-sym").value.trim();
+  var q = $("add-sym").value.trim();
   var note = $("add-note");
-  if(!sym) return;
+  if(!q) return;
   note.textContent = "Recherche…";
-  searchSymbol(sym).then(function(c){
-    if(!c.length){ note.textContent = "Aucun jeton trouvé pour « " + sym + " »."; renderCands([]); return; }
-    note.textContent = "Choisis le bon jeton. Plusieurs projets peuvent partager un symbole, et des copies frauduleuses existent : compare le nom et le rang.";
-    renderCands(c.slice(0, 6));
-  }).catch(function(e){ note.textContent = describeError(e); });
+  var isAddr = looksLikeAddress(q);
+  var cgP = isAddr ? Promise.resolve([]) : searchSymbol(q).catch(function(){ return null; });
+  var dexP = dexApi(isAddr ? "/tokens/" + encodeURIComponent(q) : "/search?q=" + encodeURIComponent(q))
+    .then(function(j){
+      var ql = q.toLowerCase();
+      var pairs = (j.pairs || []).filter(function(p){ return p.priceUsd && p.baseToken && p.baseToken.address && p.pairAddress; });
+      if(isAddr) pairs = pairs.filter(function(p){ return p.baseToken.address.toLowerCase() === ql; });
+      else pairs = pairs.filter(function(p){ return p.baseToken.symbol.toLowerCase() === ql || p.baseToken.name.toLowerCase() === ql; });
+      pairs.sort(function(a, b){ return ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0); });
+      var seen = {}, out = [];
+      pairs.forEach(function(p){
+        var k = p.chainId + ":" + p.baseToken.address;
+        if(!seen[k]){ seen[k] = 1; out.push(p); }   // une seule paire (la plus liquide) par jeton et par blockchain
+      });
+      return out.slice(0, 6);
+    }).catch(function(){ return null; });
+  Promise.all([cgP, dexP]).then(function(r){
+    var cg = r[0], dx = r[1];
+    if(cg === null && dx === null){ note.textContent = "Impossible de joindre CoinGecko et DexScreener. Vérifie ta connexion."; renderCands([], []); return; }
+    cg = cg || []; dx = dx || [];
+    if(!cg.length && !dx.length){ note.textContent = "Aucun jeton trouvé pour « " + q + " »."; renderCands([], []); return; }
+    note.textContent = "Choisis le bon jeton. Plusieurs projets peuvent partager un symbole et des copies frauduleuses existent. Les lignes « DEX » viennent d'échanges décentralisés : compare le contrat et la liquidité.";
+    renderCands(cg.slice(0, 6), dx);
+  });
 });
 
 /* ---------- Contrôles ---------- */
