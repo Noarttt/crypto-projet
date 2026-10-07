@@ -1,0 +1,7 @@
+{
+  "name": "notif",
+  "main": "worker.js",
+  "compatibility_date": "2025-09-01",
+  "triggers": { "crons": ["* * * * *"] },
+  "kv_namespaces": [ { "binding": "KV" } ]
+}
