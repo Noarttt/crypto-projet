@@ -89,6 +89,9 @@ button{cursor:pointer}
 .presets.big{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px}
 .btn.big{padding:14px 4px; font-size:1rem; font-weight:600; text-align:center; min-width:0}
 .btn.sel{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+.rules{display:flex; flex-direction:column; gap:14px; margin-top:10px}
+.rule{display:flex; flex-direction:column; gap:8px; align-items:flex-start}
+.rule .alerts,.rule .presets{width:100%}
 .slider{display:flex; align-items:center; gap:8px}
 .trade .slider input[type="range"]{flex:1; width:auto; padding:0; border:0; background:none; accent-color:var(--accent)}
 details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weight:500}
@@ -203,6 +206,14 @@ function paperValue(p, priceOf){
     total += pos.qty * pr;
   });
   return total;
+}
+function stopLossTrigger(pos, price, pct){
+  if(!pos || !(pos.qty > 0) || !(pct > 0) || !(price > 0)) return false;
+  var avg = pos.cost / pos.qty;
+  return price <= avg * (1 - pct / 100);
+}
+function autoBuyTrigger(level, price, cash){
+  return level > 0 && price > 0 && cash > 0.005 && price <= level;
 }
 /* PAPER-CORE-END */
 
@@ -408,6 +419,7 @@ function refresh(){
   }).then(function(){
     lastOk = Date.now(); failCount = 0; lastError = null;
     rememberLastPrices();
+    runAutomation();
     evaluateAlerts();
   }).catch(function(e){
     failCount++; lastError = describeError(e);
@@ -437,6 +449,46 @@ function rememberLastPrices(){
   if(changed) save();
 }
 function setFlash(text, kind){ flash = {text:text, t:Date.now(), kind:kind || "ok"}; }
+
+/* ---------- Règles automatiques (simulation) ---------- */
+function getRules(t){
+  if(!t.rules) t.rules = {};
+  if(!t.rules.sl) t.rules.sl = {on:false, pct:10};
+  if(!t.rules.buy) t.rules.buy = {on:false, price:null, fraction:0.25};
+  return t.rules;
+}
+function runAutomation(){
+  if(!paperActive()) return;
+  var p = state.paper, msgs = [], cur = CUR_SYMBOL[state.cur], changed = false;
+  state.tokens.forEach(function(t){
+    if(!t.id) return;
+    var price = priceOf(t.id);
+    if(!price) return;
+    var r = getRules(t);
+    if(r.sl.on && stopLossTrigger(p.pos[t.id], price, r.sl.pct)){
+      var res = paperSell(p, t.id, 1, price);
+      if(res.ok){
+        p.log[0].auto = "stop loss";
+        r.sl.on = false; changed = true;
+        msgs.push("Stop loss simulé sur " + t.sym + " : tout vendu à " + fmtPrice(price) + " " + cur +
+          " (résultat " + (res.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(res.pnl)) + " " + cur + ").");
+      }
+    }
+    if(r.buy.on && autoBuyTrigger(r.buy.price, price, p.cash)){
+      var spend = Math.min(p.cash, Math.round(p.cash * r.buy.fraction * 100) / 100);
+      var rb = paperBuy(p, t.id, t.sym, spend, price);
+      r.buy.on = false; changed = true;
+      if(rb.ok){
+        p.log[0].auto = "achat auto";
+        msgs.push("Achat automatique simulé sur " + t.sym + " : " + fmtQty(rb.qty) + " pour " + fmtMoney(spend) + " " + cur +
+          " à " + fmtPrice(price) + " " + cur + ".");
+      } else {
+        msgs.push("Achat automatique sur " + t.sym + " annulé : " + rb.msg);
+      }
+    }
+  });
+  if(changed){ save(); setFlash(msgs.join(" "), "ok"); notify(msgs); }
+}
 
 /* ---------- Alertes ---------- */
 function evaluateAlerts(){
@@ -625,6 +677,73 @@ function tradePanel(t, d){
   return box;
 }
 
+function rulesPanel(t){
+  var r = getRules(t);
+  var p = state.paper;
+  var cur = CUR_SYMBOL[state.cur];
+  var pos = t.id ? p.pos[t.id] : null;
+  var price = t.id ? priceOf(t.id) : null;
+  var key = "rules-" + t.sym;
+
+  function toggleBtn(label, on, handler){
+    return h("button", {type:"button", class:"btn small" + (on ? " sel" : ""), "aria-pressed":String(on), onclick:handler,
+      text:label + " : " + (on ? "activé" : "désactivé")});
+  }
+
+  // Stop loss
+  var slInput = h("input", {id:"sl-" + t.sym, type:"text", inputmode:"decimal", value:String(r.sl.pct)});
+  slInput.addEventListener("change", function(){
+    var v = numOrNull(slInput.value);
+    r.sl.pct = v ? Math.min(90, Math.max(1, v)) : 10;
+    save(); render();
+  });
+  var slNote;
+  if(pos){
+    var avg = pos.cost / pos.qty;
+    slNote = "Prix moyen d'achat ≈ " + fmtPrice(avg) + " " + cur + " · déclenchement à ≈ " + fmtPrice(avg * (1 - r.sl.pct / 100)) + " " + cur + ".";
+  } else {
+    slNote = "Aucune position ouverte : la règle agira dès qu'une position existe.";
+  }
+
+  // Achat automatique
+  var buyInput = h("input", {id:"ab-" + t.sym, type:"text", inputmode:"decimal", placeholder:"—", value: r.buy.price == null ? "" : String(r.buy.price)});
+  buyInput.addEventListener("change", function(){
+    r.buy.price = numOrNull(buyInput.value);
+    if(!r.buy.price) r.buy.on = false;
+    save(); render();
+  });
+  var fracBtns = h("div", {class:"presets big"}, [0.25, 0.5, 0.75, 1].map(function(fr){
+    return h("button", {type:"button", class:"btn big" + (r.buy.fraction === fr ? " sel" : ""), onclick:function(){
+      r.buy.fraction = fr; save(); render();
+    }, text: fr === 1 ? "All in" : Math.round(fr * 100) + " %"});
+  }));
+
+  var box = h("details", {}, [
+    h("summary", {text:"Stop loss et achat auto (simulation)"}),
+    h("div", {class:"rules"}, [
+      h("div", {class:"rule"}, [
+        toggleBtn("Stop loss", r.sl.on, function(){ r.sl.on = !r.sl.on; save(); render(); }),
+        h("div", {class:"alerts"}, [h("label", {for:"sl-" + t.sym}, ["Vendre tout si le prix baisse de (%) sous mon prix moyen d'achat", slInput])]),
+        h("p", {class:"note", text:slNote})
+      ]),
+      h("div", {class:"rule"}, [
+        toggleBtn("Achat auto", r.buy.on, function(){
+          if(!r.buy.on && !(r.buy.price > 0)){ setFlash("Indique d'abord le prix d'achat automatique pour " + t.sym + ".", "err"); render(); return; }
+          r.buy.on = !r.buy.on; save(); render();
+        }),
+        h("div", {class:"alerts"}, [h("label", {for:"ab-" + t.sym}, ["Acheter si le prix descend à ou sous (" + cur + ")", buyInput])]),
+        h("p", {class:"note", text:"Part du solde simulé à investir :"}),
+        fracBtns,
+        h("p", {class:"note", text: (price ? "Prix actuel : " + fmtPrice(price) + " " + cur + ". " : "") + "L'achat se fait une seule fois, puis la règle se désactive."})
+      ]),
+      h("p", {class:"note", text:"Ces règles ne fonctionnent qu'en simulation et seulement pendant que cette page est ouverte (vérification toutes les " + state.interval + " s). L'ordre se fait au prix constaté à ce moment-là, qui peut être moins bon que le seuil."})
+    ])
+  ]);
+  if(openIds[key]) box.open = true;
+  box.addEventListener("toggle", function(){ openIds[key] = box.open; });
+  return box;
+}
+
 function card(t){
   var d = t.id ? data[t.id] : null;
   var hits = active[t.sym];
@@ -710,6 +829,8 @@ function card(t){
     if(tp) parts.push(tp);
   }
 
+  if(t.id) parts.push(rulesPanel(t));
+
   var a = t.alerts || mkAlerts();
   var det = h("details", {}, [
     h("summary", {text:"Alertes et gestion"}),
@@ -763,7 +884,7 @@ function renderPaper(){
   var hist = h("details", {}, [h("summary", {text:"Historique (" + p.log.length + ")"})]);
   if(p.log.length){
     var ul = h("ul", {class:"log"}, p.log.slice(0, 20).map(function(e){
-      var line = dateStr(e.t) + " · " + (e.side === "buy" ? "Achat " : "Vente ") + fmtQty(e.qty) + " " + e.sym + " à " + fmtPrice(e.price) + " " + cur +
+      var line = dateStr(e.t) + " · " + (e.auto ? "[" + e.auto + "] " : "") + (e.side === "buy" ? "Achat " : "Vente ") + fmtQty(e.qty) + " " + e.sym + " à " + fmtPrice(e.price) + " " + cur +
         " · " + fmtMoney(e.amount) + " " + cur + (e.side === "sell" && e.pnl != null ? " · résultat " + (e.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(e.pnl)) : "");
       return h("li", {text:line});
     }));
