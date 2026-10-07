@@ -673,6 +673,7 @@ var TXW = {last:null};
 function txId(){ var l = state && state.paper && state.paper.log && state.paper.log[0]; return l ? l.t + ":" + l.side : ""; }
 function save(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+  try{ if(typeof notifSyncSoon === "function") notifSyncSoon(); }catch(e){}
   // une nouvelle opération simulée (achat, vente, swap, bridge, conversion) : on actualise le wallet
   if(TXW.last !== null){
     var id = txId();
@@ -3214,6 +3215,74 @@ function pumpFollow(x){
     PUMP.follow[x.mint] = "Ajouté à ton suivi (onglet Suivi).";
   }).catch(function(e){ PUMP.follow[x.mint] = describeError(e); }).then(function(){ renderPump(); });
 }
+/* Notifications en arrière-plan : un Worker Cloudflare surveille les alertes et pousse via ntfy */
+var NOTIF_LS = "veille-crypto.notif";
+var NOTIF = (function(){
+  var o = {url:"", topic:"", token:"", last:"", ok:null, lastSent:"", timer:null};
+  try{ var v = JSON.parse(localStorage.getItem(NOTIF_LS) || "null"); if(v){ o.url = v.url || ""; o.topic = v.topic || ""; o.token = v.token || ""; } }catch(e){}
+  function rnd(n){ var a = new Uint8Array(n), c = "abcdefghijklmnopqrstuvwxyz0123456789", r = ""; (window.crypto || window.msCrypto).getRandomValues(a); for(var i = 0; i < n; i++) r += c[a[i] % c.length]; return r; }
+  if(!o.topic) o.topic = "vc-" + rnd(20);
+  if(!o.token) o.token = rnd(28);
+  return o;
+})();
+function notifSaveCfg(){ try{ localStorage.setItem(NOTIF_LS, JSON.stringify({url:NOTIF.url, topic:NOTIF.topic, token:NOTIF.token})); }catch(e){} }
+function notifPayload(){
+  return {topic:NOTIF.topic, token:NOTIF.token, cur:state.cur, alerts:state.tokens.filter(function(t){
+    var a = t.alerts; return t.id && a && (a.above != null || a.below != null || a.move != null);
+  }).map(function(t){ return {id:t.id, sym:t.sym, above:t.alerts.above, below:t.alerts.below, move:t.alerts.move}; })};
+}
+function notifSyncSoon(){
+  if(!NOTIF.url) return;
+  var js = JSON.stringify(notifPayload());
+  if(js === NOTIF.lastSent) return;
+  clearTimeout(NOTIF.timer); NOTIF.timer = setTimeout(function(){ notifSync(); }, 2500);
+}
+function notifSync(){
+  if(!NOTIF.url) return Promise.resolve();
+  var pl = notifPayload(), js = JSON.stringify(pl);
+  return fetch(NOTIF.url.replace(/\/+$/, "") + "/sync", {method:"POST", headers:{"Content-Type":"application/json"}, body:js})
+    .then(function(r){ return r.json().catch(function(){ return {}; }).then(function(j){ return {st:r.status, j:j}; }); })
+    .then(function(x){
+      if(x.st === 200 && x.j.ok){ NOTIF.lastSent = js; NOTIF.ok = true; NOTIF.last = "Synchronisé à " + timeStr(Date.now()) + " (" + x.j.alerts + " alerte(s) surveillée(s))."; }
+      else { NOTIF.ok = false; NOTIF.last = "Échec : " + (x.j.error || ("réponse " + x.st)); }
+    }, function(){ NOTIF.ok = false; NOTIF.last = "Worker injoignable : vérifie l'adresse."; })
+    .then(function(){ if(currentTab === "options") renderOptions(); });
+}
+function renderNotifOptions(root){
+  var urlIn = h("input", {id:"nf-url", type:"url", placeholder:"https://veille-notif.ton-compte.workers.dev", value:NOTIF.url, autocomplete:"off", autocapitalize:"none", spellcheck:"false"});
+  urlIn.addEventListener("change", function(){
+    var v = urlIn.value.trim();
+    if(v && !/^https:\/\/[^\s]+$/.test(v)){ NOTIF.ok = false; NOTIF.last = "Adresse invalide (elle doit commencer par https://)."; renderOptions(); return; }
+    NOTIF.url = v; NOTIF.lastSent = ""; notifSaveCfg(); if(v) notifSync(); else renderOptions();
+  });
+  urlIn.addEventListener("blur", function(){ setTimeout(function(){ if(currentTab === "options") renderOptions(); }, 0); });
+  var testMsg = h("p", {class:"banner ok", hidden:"hidden", text:""});
+  var kids = [
+    h("h2", {style:"margin:0; font-size:1.05rem", text:"Notifications en arrière-plan (Android)"}),
+    h("p", {class:"note", text:"Pour être prévenu même appli fermée : un petit Worker Cloudflare gratuit surveille tes alertes de prix toutes les minutes et t'envoie une notification via l'application ntfy. Mise en place (≈ 5 minutes) :"}),
+    h("ol", {class:"note", style:"margin:0; padding-left:18px"}, [
+      h("li", {text:"Installe l'application ntfy (Google Play), touche « + » et abonne-toi au sujet ci-dessous. Dans les réglages Android, désactive l'optimisation de batterie pour ntfy."}),
+      h("li", {text:"Sur dash.cloudflare.com (compte gratuit) : Workers & Pages → Create → Hello World → Deploy, puis Edit code, colle le contenu de notif-worker/worker.js (dans ton dépôt GitHub) et Deploy."}),
+      h("li", {text:"Dans Storage & Databases → KV, crée un espace (nom libre). Dans ton Worker : Bindings → Add → KV namespace, nom de variable KV."}),
+      h("li", {text:"Dans ton Worker : Settings → Trigger Events → Cron : ajoute * * * * *."}),
+      h("li", {text:"Colle l'adresse du Worker ci-dessous : la synchronisation de tes alertes est ensuite automatique."})
+    ]),
+    h("div", {class:"note", text:"Sujet ntfy à suivre (secret, ne le partage pas) :"}),
+    h("div", {class:"mono", style:"user-select:all; word-break:break-all", text:NOTIF.topic}),
+    h("label", {class:"field", for:"nf-url"}, ["Adresse du Worker", urlIn])
+  ];
+  if(NOTIF.last) kids.push(h("p", {class:"banner " + (NOTIF.ok ? "ok" : "err"), text:NOTIF.last}));
+  kids.push(h("div", {class:"acts"}, [
+    h("button", {type:"button", class:"btn small", onclick:function(){
+      fetch("https://ntfy.sh/" + NOTIF.topic, {method:"POST", headers:{Title:"Veille crypto"}, body:"Test : les notifications fonctionnent."})
+        .then(function(r){ testMsg.hidden = false; testMsg.className = r.ok ? "banner ok" : "banner err"; testMsg.textContent = r.ok ? "Test envoyé : tu devrais le recevoir dans ntfy." : "ntfy a refusé le message (" + r.status + ")."; },
+          function(){ testMsg.hidden = false; testMsg.className = "banner err"; testMsg.textContent = "ntfy injoignable."; });
+    }, text:"Envoyer un test"}),
+    NOTIF.url ? h("button", {type:"button", class:"btn small", onclick:function(){ NOTIF.lastSent = ""; notifSync(); }, text:"Synchroniser maintenant"}) : null
+  ]), testMsg,
+  h("p", {class:"note", text:"Seules les alertes de prix des jetons suivis (au-dessus, sous, variation 24 h) sont surveillées en arrière-plan. Les prix viennent de CoinGecko : une alerte peut avoir quelques minutes de retard."}));
+  root.appendChild(h("section", {class:"panel"}, kids));
+}
 function renderOptions(){
   var root = $("view-options");
   var ae = document.activeElement;
@@ -3258,6 +3327,7 @@ function renderOptions(){
       renderOptions();
     }, text:"Supprimer la clé"}));
   root.appendChild(h("section", {class:"panel"}, kids));
+  renderNotifOptions(root);
 }
 function applyTheme(t){
   var el = document.documentElement;
