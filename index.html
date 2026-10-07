@@ -297,13 +297,16 @@ var BRIDGES = [
 /* Règle de choix : le pont le moins cher (frais du pont + gas de départ). Exception : si un autre pont est
    plus de 20 % plus rapide pour un surcoût strictement inférieur à 10 %, on prend le plus rapide de ceux-là.
    Dès qu'Ethereum est au départ ou à l'arrivée, le prix prime toujours : pas d'exception pour la vitesse. */
-function pickBridge(from, to, amount, srcGasUsd){
+function pickBridge(from, to, amount, srcGasUsd, quotes){
   if(from === to || !(amount > 0)) return null;
   var gas = srcGasUsd > 0 ? srcGasUsd : 0;
   var list = BRIDGES.filter(function(b){ return b.chains.indexOf(from) >= 0 && b.chains.indexOf(to) >= 0; })
     .map(function(b){
-      var fee = b.fixed + amount * b.pct / 100, cost = fee + gas;
-      return {b:b, fee:fee, gas:gas, cost:cost, pct:cost / amount * 100, time:b.time};
+      var q = quotes && quotes[b.k];
+      var fee = q ? q.fee : b.fixed + amount * b.pct / 100;
+      var g = (q && q.gas != null) ? q.gas : gas;
+      var cost = fee + g;
+      return {b:b, fee:fee, gas:g, cost:cost, pct:cost / amount * 100, time: q && q.time > 0 ? q.time : b.time, live:!!q};
     }).sort(function(x, y){ return x.cost - y.cost; });
   if(!list.length) return null;
   var cheapest = list[0];
@@ -1690,11 +1693,109 @@ function showTab(name){
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
 $("tab-bridge").addEventListener("click", function(){ showTab("bridge"); });
 
+/* ---------- Devis en direct (actualisés en continu tant que l'onglet Bridge est ouvert) ----------
+   Across : son API publique, toutes les 10 s. Autres ponts : l'API de devis de LI.FI, un pont à la fois (le plus
+   ancien d'abord) toutes les 40 s pour rester sous les limites de requêtes. Sinon : estimation. */
+var USDC_ADDR = {
+  ethereum:"0xA0b86991c6218b36c1d19D4a2e9Eb0cE3606eB48", base:"0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913",
+  arbitrum:"0xaf88d065e77c8cC2239327C5EDb3A432268e5831", optimism:"0x0b2C639c533813f4Aa9D7837CAf62653d097Ff85",
+  polygon:"0x3c499c542cEF5E3811e1192ce70d8cC03d5c3359", bsc:"0x8AC76a51cc950d9822D68b83fE1Ad97B32Cd580d",
+  avalanche:"0xB97EF9Ef8734C71904D8002F8b6Bc66Dd9c48a6E", solana:"EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v"
+};
+var LIFI_KEY = {across:"across", debridge:"debridge", stargate:"stargateV2", cctp:"cctp", mayan:"mayan", synapse:"synapse", hop:"hop"};
+var DUMMY_EVM = "0x552008c0f6870c2f77e5cC1d2eb9bdff03e30Ea0", DUMMY_SOL = "GDfnEsia2WLAW5t8yx2X5j2mkfA74i5kwGdDuZHt7XmG";
+var LQ = {data:{}, lastKey:"", lastUpdate:0, lifiPause:0, timersOn:false, lifiBusy:false, acrossBusy:false};
+function usdcDec(chain){ return chain === "bsc" ? 18 : 6; }
+function usdcUnits(amount, chain){ return (BigInt(Math.round(amount * 1e6)) * (BigInt(10) ** BigInt(usdcDec(chain))) / BigInt(1000000)).toString(); }
+function routeKey(){ var B = state.bridge; return B.from + "|" + B.to + "|" + B.amount; }
+function liveQuotes(){
+  var out = {}, rk = routeKey(), now = Date.now();
+  Object.keys(LIFI_KEY).forEach(function(k){
+    var q = LQ.data[k + "|" + rk];
+    if(q && q.ok && now - q.t < 600000) out[k] = q;
+  });
+  return out;
+}
+function fetchAcross(){
+  var B = state.bridge, rk = routeKey();
+  var bd = BRIDGES.filter(function(b){ return b.k === "across"; })[0];
+  if(LQ.acrossBusy || B.from === "solana" || B.to === "solana" || bd.chains.indexOf(B.from) < 0 || bd.chains.indexOf(B.to) < 0) return Promise.resolve();
+  LQ.acrossBusy = true;
+  return extApi("https://app.across.to/api", "Across", "/suggested-fees?inputToken=" + USDC_ADDR[B.from] + "&outputToken=" + USDC_ADDR[B.to] +
+    "&originChainId=" + BR_CHAINS[B.from].id + "&destinationChainId=" + BR_CHAINS[B.to].id + "&amount=" + usdcUnits(B.amount, B.from))
+    .then(function(j){
+      LQ.acrossBusy = false;
+      var tot = j && j.totalRelayFee && parseFloat(j.totalRelayFee.total);
+      if(j && j.isAmountTooLow === false && tot >= 0){
+        LQ.data["across|" + rk] = {ok:true, t:Date.now(), fee:tot / Math.pow(10, usdcDec(B.from)), time:j.estimatedFillTimeSec, gas:null};
+        LQ.lastUpdate = Date.now();
+      } else { LQ.data["across|" + rk] = {ok:false, t:Date.now()}; }
+    }, function(){ LQ.acrossBusy = false; });
+}
+function fetchLifi(bd){
+  var B = state.bridge, rk = routeKey(), key = bd.k + "|" + rk;
+  var dec = usdcDec(B.from), decTo = usdcDec(B.to);
+  var url = "/quote?fromChain=" + BR_CHAINS[B.from].id + "&toChain=" + BR_CHAINS[B.to].id +
+    "&fromToken=" + USDC_ADDR[B.from] + "&toToken=" + USDC_ADDR[B.to] + "&fromAmount=" + usdcUnits(B.amount, B.from) +
+    "&fromAddress=" + (B.from === "solana" ? DUMMY_SOL : DUMMY_EVM) + "&toAddress=" + (B.to === "solana" ? DUMMY_SOL : DUMMY_EVM) +
+    "&allowBridges=" + LIFI_KEY[bd.k];
+  return extApi("https://li.quest/v1", "LI.FI", url).then(function(j){
+    var e = j && j.estimate, tool = String((j && j.tool) || "").toLowerCase();
+    var okTool = bd.k === "cctp" ? /cctp|polymer|circle/.test(tool) : tool.indexOf(LIFI_KEY[bd.k].toLowerCase().replace("v2", "")) === 0;
+    if(!e || !okTool){ LQ.data[key] = {ok:false, t:Date.now()}; return; }
+    var fromAmt = parseFloat(e.fromAmount) / Math.pow(10, dec), toAmt = parseFloat(e.toAmount) / Math.pow(10, decTo);
+    var lifiFee = 0, gas = 0;
+    (e.feeCosts || []).forEach(function(f){ if(/lifi/i.test(f.name || "")) lifiFee += parseFloat(f.amountUSD) || 0; });
+    (e.gasCosts || []).forEach(function(g){ gas += parseFloat(g.amountUSD) || 0; });
+    if(!(fromAmt > 0) || !(toAmt >= 0)){ LQ.data[key] = {ok:false, t:Date.now()}; return; }
+    LQ.data[key] = {ok:true, t:Date.now(), fee:Math.max(0, fromAmt - toAmt - lifiFee), gas:gas, time:e.executionDuration};
+    LQ.lastUpdate = Date.now();
+  }, function(e){
+    if(e && e.status === 429) LQ.lifiPause = Date.now() + 120000;
+    else LQ.data[key] = {ok:false, t:Date.now()};
+  });
+}
+function lifiTick(){
+  if(LQ.lifiBusy || Date.now() < LQ.lifiPause) return Promise.resolve();
+  var B = state.bridge, rk = routeKey();
+  var cands = BRIDGES.filter(function(b){ return b.k !== "across" && b.chains.indexOf(B.from) >= 0 && b.chains.indexOf(B.to) >= 0; });
+  if(!cands.length) return Promise.resolve();
+  cands.sort(function(a, b){
+    var ta = (LQ.data[a.k + "|" + rk] || {t:0}).t, tb = (LQ.data[b.k + "|" + rk] || {t:0}).t;
+    return ta - tb;
+  });
+  LQ.lifiBusy = true;
+  return fetchLifi(cands[0]).then(function(){ LQ.lifiBusy = false; }, function(){ LQ.lifiBusy = false; });
+}
+function bridgeActive(){ return currentTab === "bridge" && !document.hidden; }
+function kickQuotes(){
+  // Première série rapide (un appel LI.FI toutes les 1,5 s) pour remplir les devis, puis cadence régulière.
+  fetchAcross().then(function(){ if(bridgeActive()) renderBridge(); });
+  var n = BRIDGES.filter(function(b){ return b.k !== "across" && b.chains.indexOf(state.bridge.from) >= 0 && b.chains.indexOf(state.bridge.to) >= 0; }).length;
+  var rk = routeKey();
+  for(var i = 0; i < n; i++){
+    (function(i){
+      setTimeout(function(){
+        if(!bridgeActive() || routeKey() !== rk) return;
+        lifiTick().then(function(){ if(bridgeActive()) renderBridge(); });
+      }, 600 + i * 1500);
+    })(i);
+  }
+}
+function startQuoteTimers(){
+  if(LQ.timersOn) return;
+  LQ.timersOn = true;
+  setInterval(function(){ if(bridgeActive()) fetchAcross().then(function(){ if(bridgeActive()) renderBridge(); }); }, 10000);
+  setInterval(function(){ if(bridgeActive()) lifiTick().then(function(){ if(bridgeActive()) renderBridge(); }); }, 40000);
+}
 function renderBridge(){
   var root = $("view-bridge");
   var ae = document.activeElement;
-  if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
+  if(ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT") && root.contains(ae)) return;
   var B = state.bridge;
+  startQuoteTimers();
+  if(LQ.lastKey !== routeKey()){ LQ.lastKey = routeKey(); kickQuotes(); }
+  var Q = liveQuotes();
   refreshGas([B.from]);
   var g = gasUsdFor(B.from), gLive = g != null;
   var srcGas = gLive ? g : (GAS_USD[B.from] != null ? GAS_USD[B.from] : 0.5);
@@ -1726,7 +1827,7 @@ function renderBridge(){
     h("p", {class:"note", text:"Gas de départ sur " + BR_CHAINS[B.from].label + " : ≈ " + (srcGas < 0.1 ? srcGas.toFixed(3) : srcGas.toFixed(2)) + " $ (" + (gLive ? "en direct" : "valeur moyenne") + ")."})
   ]));
 
-  var pk = pickBridge(B.from, B.to, B.amount, srcGas);
+  var pk = pickBridge(B.from, B.to, B.amount, srcGas, Q);
   var kids = [];
   if(!pk){
     kids.push(h("p", {class:"note", text:"Aucun pont de ma liste ne relie ces deux blockchains. Essaie un agrégateur comme Jumper ou passe par une bourse."}));
@@ -1744,7 +1845,7 @@ function renderBridge(){
       h("div", {text:"Coût total ≈ " + fmtMoney(b.cost) + " $ (" + b.pct.toFixed(2) + " %) · frais du pont " + fmtMoney(b.fee) + " $ + gas de départ " + fmtMoney(b.gas) + " $"}),
       h("div", {text:"Durée " + fmtDuration(b.time) + " · tu reçois ≈ " + fmtMoney(Math.max(0, B.amount - b.cost)) + " $"}),
       h("div", {class:"note", text:why}),
-      b.b.est ? h("div", {class:"note", text:"Les tarifs de ce pont sont des estimations moins sûres que les autres."}) : null
+      b.live ? h("div", {class:"note", text:"Devis en direct, actualisé automatiquement."}) : h("div", {class:"note", text:"Estimation (pas encore de devis en direct pour ce pont)" + (b.b.est ? ", moins sûre que les autres." : ".")})
     ]));
     var links = [];
     if(b.b.url) links.push(h("a", {class:"btn primary small", href:b.b.url, target:"_blank", rel:"noopener noreferrer", text:"Ouvrir " + b.b.name + " ↗"}));
@@ -1755,11 +1856,12 @@ function renderBridge(){
     kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (du moins cher au plus cher)"}));
     kids.push(h("ul", {class:"brlist"}, pk.list.map(function(x){
       return h("li", {}, [
-        h("span", {text:x.b.name + (x === pk.best ? " ✓" : "")}),
+        h("span", {text:x.b.name + (x === pk.best ? " ✓" : "") + (x.live ? " · en direct" : " · estimation")}),
         h("span", {class:"mono", text:fmtMoney(x.cost) + " $ · " + x.pct.toFixed(2) + " % · " + fmtDuration(x.time)})
       ]);
     })));
   }
+  kids.push(h("p", {class:"note", text: LQ.lastUpdate ? "Devis actualisés à " + timeStr(LQ.lastUpdate) + " (Across toutes les 10 s, les autres ponts à tour de rôle toutes les 40 s)." : "Devis en cours de chargement…"}));
   root.appendChild(h("section", {class:"panel"}, kids));
 
   // Meilleur pont pour chaque blockchain d'arrivée, au départ de la blockchain choisie
@@ -1777,7 +1879,7 @@ function renderBridge(){
     h("ul", {class:"brlist"}, rows)
   ]));
 
-  root.appendChild(h("p", {class:"note", text:"Règle appliquée : on prend le pont le moins cher ; si un autre est plus de 20 % plus rapide pour moins de 10 % de surcoût, on prend celui-là, sauf quand Ethereum est concerné (le prix prime alors toujours). Les coûts sont des estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) et du gas en direct : le devis réel sur le site du pont fait foi. Cette application ne déplace aucun fonds : tu confirmes avec ton portefeuille sur le site du pont. Pour Solana, garde un peu de SOL pour les frais. Information uniquement, pas un conseil d'investissement."}));
+  root.appendChild(h("p", {class:"note", text:"Règle appliquée : on prend le pont le moins cher ; si un autre est plus de 20 % plus rapide pour moins de 10 % de surcoût, on prend celui-là, sauf quand Ethereum est concerné (le prix prime alors toujours). Les coûts viennent de devis en direct quand ils sont disponibles (Across et LI.FI), sinon d'estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) ; le devis réel sur le site du pont fait foi. Cette application ne déplace aucun fonds : tu confirmes avec ton portefeuille sur le site du pont. Pour Solana, garde un peu de SOL pour les frais. Information uniquement, pas un conseil d'investissement."}));
 }
 
 render();
