@@ -2225,7 +2225,8 @@ function renderBridge(){
     var manual = (B.pick && B.pick !== "auto") ? pk.list.filter(function(x){ return x.b.k === B.pick; })[0] : null;
     var b = manual || pk.best;
     function choosePick(k){
-      B.pick = k; save(); renderBridge();
+      B.pick = k; if(k !== "auto") B.last = k;   // le dernier choix manuel reste en mémoire même après un passage en automatique
+      save(); renderBridge();
       if(k !== "across") lifiTick().then(function(){ if(bridgeActive()) renderBridge(); });
     }
     var pickSel = h("select", {id:"br-pick"}, [h("option", {value:"auto", text:"Automatique (recommandé : " + pk.best.b.name + ")"})].concat(
@@ -2243,18 +2244,20 @@ function renderBridge(){
       : "Choisi : le moins cher" + (pk.list.length > 1
           ? ((B.from === "ethereum" || B.to === "ethereum") ? ". Ethereum est concerné : le prix prime toujours sur la vitesse."
             : ". Aucun autre pont n'est à la fois plus de 20 % plus rapide et moins de 10 % plus cher.") : ".");
+    if(!B.last && B.pick && B.pick !== "auto") B.last = B.pick;
+    var lastX = B.last ? pk.list.filter(function(x){ return x.b.k === B.last; })[0] : null;
     function brCard(title, x, active, onclick){
-      var kidsC = [h("div", {class:"note", text:(active ? "✓ " : "") + title})];
+      var kidsC = [h("div", {class:"note", text:(active ? "✓ " : "") + title + (x && !active && title.indexOf("manuel") >= 0 ? " · touche pour le réutiliser" : "")})];
       if(x){
         kidsC.push(h("div", {class:"big", text:x.b.name}));
         kidsC.push(h("div", {class:"note", text:fmtMoney(x.cost) + " $ (" + x.pct.toFixed(2) + " %) · " + fmtDuration(x.time) + " · reçu ≈ " + fmtMoney(Math.max(0, B.amount - x.cost)) + " $"}));
       } else {
-        kidsC.push(h("div", {class:"note", text:"Aucun pont choisi à la main : touche une ligne de la liste ci-dessous."}));
+        kidsC.push(h("div", {class:"note", text: B.last ? "Ton dernier choix n'existe pas sur ce trajet : choisis un pont dans la liste ci-dessous." : "Aucun pont choisi à la main : touche une ligne de la liste ci-dessous."}));
       }
       return h("button", {type:"button", class:"brcard" + (active ? " sel" : ""), "aria-pressed":String(!!active), onclick:onclick}, kidsC);
     }
     kids.push(h("div", {class:"brcards"}, [
-      brCard("Pont choisi (manuel)", manual, !!manual, function(){}),
+      brCard("Pont choisi (manuel)", lastX, !!manual, function(){ if(lastX && !manual) choosePick(B.last); }),
       brCard("Best option (automatique)", pk.best, !manual, function(){ choosePick("auto"); })
     ]));
     kids.push(h("div", {class:"brdetail"}, [
