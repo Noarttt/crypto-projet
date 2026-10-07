@@ -192,15 +192,16 @@ function mkAlerts(){ return {above:null, below:null, move:null}; }
 /* PAPER-CORE-START */
 function newPaper(cur, amount){
   var a = amount > 0 ? amount : 300;
-  return {cur: cur || "chf", start: a, cash: a, bal: {cex: a}, fee: 1, feeMode: "auto", pos: {}, log: []};
+  return {cur: cur || "chf", start: a, cash: a, bal: {base: a}, fee: 1, feeMode: "auto", pos: {}, log: []};
 }
-/* Les fonds simulés sont répartis par lieu : "cex" (compte sur une bourse) ou une blockchain. Un jeton décentralisé
-   (id "dex:blockchain:paire") s'achète et se vend avec les fonds de sa blockchain ; les autres avec ceux de la bourse. */
-function chainOfId(id){ return String(id).indexOf("dex:") === 0 ? String(id).split(":")[1] : "cex"; }
+/* Les fonds simulés sont répartis par blockchain (au départ, tout est sur Base). Un jeton s'achète et se vend avec les
+   fonds de sa propre blockchain : celle de sa paire pour un jeton décentralisé (id "dex:blockchain:paire"), sinon celle
+   résolue via CoinGecko (Base par défaut tant qu'elle est inconnue). */
+function chainOfId(id){ return String(id).indexOf("dex:") === 0 ? String(id).split(":")[1] : "base"; }
 function balSum(p){ var s = 0; Object.keys(p.bal).forEach(function(k){ s += p.bal[k]; }); return s; }
 function paperTransfer(p, from, to, amount, cost){
   amount = Number(amount); cost = Number(cost) || 0;
-  if(!p.bal) p.bal = {cex: p.cash};
+  if(!p.bal) p.bal = {base: p.cash};
   if(from === to) return {ok:false, msg:"Choisis deux endroits différents."};
   if(!(amount > 0)) return {ok:false, msg:"Montant invalide."};
   if(cost < 0 || cost >= amount) return {ok:false, msg:"Le montant est trop faible par rapport aux frais du transfert."};
@@ -212,17 +213,17 @@ function paperTransfer(p, from, to, amount, cost){
   p.log = p.log.slice(0, 50);
   return {ok:true, received:amount - cost, fee:cost};
 }
-function paperBuy(p, id, sym, spend, price, feePct){
+function paperBuy(p, id, sym, spend, price, feePct, chainArg){
   spend = Number(spend);
   if(!(spend > 0)) return {ok:false, msg:"Montant invalide."};
   if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
-  if(!p.bal) p.bal = {cex: p.cash};
-  var chain = chainOfId(id);
-  if(spend > (p.bal[chain] || 0) + 1e-9) return {ok:false, msg:"Solde simulé insuffisant à cet endroit (" + (chain === "cex" ? "bourse" : chain) + ") : transfère des fonds depuis l'onglet Wallet ou Bridge."};
+  if(!p.bal) p.bal = {base: p.cash};
+  var chain = (p.pos[id] && p.pos[id].chain) || chainArg || chainOfId(id);
+  if(spend > (p.bal[chain] || 0) + 1e-9) return {ok:false, msg:"Solde simulé insuffisant sur " + chain + " : transfère des fonds depuis l'onglet Wallet ou Bridge."};
   var fee = spend * (feePct != null ? feePct : p.fee) / 100;
   var qty = (spend - fee) / price;
   var pos = p.pos[id];
-  if(!pos){ pos = p.pos[id] = {sym:sym, qty:0, cost:0, last:price}; }
+  if(!pos){ pos = p.pos[id] = {sym:sym, qty:0, cost:0, last:price, chain:chain}; }
   pos.qty += qty;
   pos.cost += spend;
   pos.last = price;
@@ -246,8 +247,8 @@ function paperSell(p, id, fraction, price, feePct){
   pos.qty -= qty;
   pos.cost -= costPart;
   pos.last = price;
-  if(!p.bal) p.bal = {cex: p.cash};
-  var sch = chainOfId(id);
+  if(!p.bal) p.bal = {base: p.cash};
+  var sch = pos.chain || chainOfId(id);
   p.bal[sch] = (p.bal[sch] || 0) + net;
   p.cash = balSum(p);
   p.log.unshift({t:Date.now(), side:"sell", id:id, sym:sym, qty:qty, price:price, amount:net, fee:fee, pnl:net - costPart});
@@ -267,7 +268,7 @@ function estimateCost(o){
     } else {
       parts.fee = 0.3;
       parts.spread = 0;
-      parts.impact = o.liquidity > 0 ? Math.min(50, 200 * amt / o.liquidity) : 5;
+      parts.impact = o.liquidity > 0 ? Math.min(50, 200 * amt / o.liquidity) : (o.volume > 0 ? Math.min(50, 100 * amt / o.volume) : 5);
     }
     var gas = o.gasUsd != null ? o.gasUsd : (GAS_USD[o.chain] != null ? GAS_USD[o.chain] : 0.5);
     parts.gasUsd = gas; parts.gasLive = o.gasUsd != null;
@@ -400,7 +401,8 @@ function load(){
   if(!s) s = JSON.parse(JSON.stringify(DEFAULT));
   if(!s.paper || typeof s.paper.cash !== "number" || !s.paper.pos) s.paper = newPaper("usd", 300);
   if(!Array.isArray(s.paper.log)) s.paper.log = [];
-  if(!s.paper.bal || typeof s.paper.bal !== "object") s.paper.bal = {cex: s.paper.cash};
+  if(!s.paper.bal || typeof s.paper.bal !== "object") s.paper.bal = {base: s.paper.cash};
+  if(s.paper.bal.cex != null){ s.paper.bal.base = (s.paper.bal.base || 0) + s.paper.bal.cex; delete s.paper.bal.cex; }
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
   if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
   if(!(s.bridge.amount > 0)) s.bridge.amount = 300;
@@ -627,6 +629,7 @@ function refresh(){
   }).then(function(){
     lastOk = Date.now(); failCount = 0; lastError = null;
     refreshGas();
+    resolveChains();
     rememberLastPrices();
     runAutomation();
     evaluateAlerts();
@@ -687,7 +690,8 @@ function refreshGas(extra){
   var chains = [];
   (extra || []).forEach(function(c){ if(GAS_CHAINS[c] && chains.indexOf(c) < 0 && !gasFresh(c) && !(GAS_TRY[c] && Date.now() - GAS_TRY[c] < 60000)) chains.push(c); });
   state.tokens.forEach(function(t){
-    if(t.dex && GAS_CHAINS[t.dex.chain] && chains.indexOf(t.dex.chain) < 0 && !gasFresh(t.dex.chain) && !(GAS_TRY[t.dex.chain] && Date.now() - GAS_TRY[t.dex.chain] < 60000)) chains.push(t.dex.chain);
+    var tc = t.dex ? t.dex.chain : t.chain;
+    if(tc && GAS_CHAINS[tc] && chains.indexOf(tc) < 0 && !gasFresh(tc) && !(GAS_TRY[tc] && Date.now() - GAS_TRY[tc] < 60000)) chains.push(tc);
   });
   if(!chains.length) return;
   gasBusy = true;
@@ -720,15 +724,16 @@ function refreshGas(extra){
 var PARA_NET = {ethereum:1, bsc:56, polygon:137, avalanche:43114, arbitrum:42161, optimism:10, base:8453};
 var SWAPQ = {data:{}, busy:false, timer:null};
 function tokenDecimals(t){
-  if(t.dex.dec != null) return Promise.resolve(t.dex.dec);
-  var ch = t.dex.chain, g = GAS_CHAINS[ch];
+  var sw = swapInfo(t);
+  if(sw.dec != null) return Promise.resolve(sw.dec);
+  var ch = sw.chain, g = GAS_CHAINS[ch];
   if(!g) return Promise.reject(new Error("chain"));
   var p = ch === "solana"
-    ? rpcCall(g.rpc, "getTokenSupply", [t.dex.addr]).then(function(r){ return r && r.value && r.value.decimals; })
-    : rpcCall(g.rpc, "eth_call", [{to:t.dex.addr, data:"0x313ce567"}, "latest"]).then(function(h){ return parseInt(h, 16); });
+    ? rpcCall(g.rpc, "getTokenSupply", [sw.addr]).then(function(r){ return r && r.value && r.value.decimals; })
+    : rpcCall(g.rpc, "eth_call", [{to:sw.addr, data:"0x313ce567"}, "latest"]).then(function(h){ return parseInt(h, 16); });
   return p.then(function(d){
     if(!(d >= 0 && d <= 30)) throw new Error("dec");
-    t.dex.dec = d; save(); return d;
+    sw.dec = d; save(); return d;
   });
 }
 function swapKey(t, side, amt){ return t.id + "|" + side + "|" + Math.round(amt); }
@@ -737,12 +742,12 @@ function swapLive(t, side, amt){
   return (q && q.ok && Date.now() - q.t < 120000) ? q : null;
 }
 function fetchSwapQuote(t, side, amt, price){
-  var ch = t.dex.chain, key = swapKey(t, side, amt);
+  var sw = swapInfo(t), ch = sw.chain, key = swapKey(t, side, amt);
   var usdc = USDC_ADDR[ch];
-  if(!usdc || !t.dex.addr || !(price > 0) || !(amt > 0)) return Promise.reject(new Error("unsupported"));
+  if(!usdc || !sw.addr || !(price > 0) || !(amt > 0)) return Promise.reject(new Error("unsupported"));
   return tokenDecimals(t).then(function(dec){
     var usdcDec = ch === "bsc" ? 18 : 6;
-    var inMint = side === "buy" ? usdc : t.dex.addr, outMint = side === "buy" ? t.dex.addr : usdc;
+    var inMint = side === "buy" ? usdc : sw.addr, outMint = side === "buy" ? sw.addr : usdc;
     var inDec = side === "buy" ? usdcDec : dec, outDec = side === "buy" ? dec : usdcDec;
     var inAmt = side === "buy" ? amt : amt / price;
     var units = BigInt(Math.round(inAmt * 1e6)) * (BigInt(10) ** BigInt(inDec)) / BigInt(1000000);
@@ -797,7 +802,7 @@ function fetchBookQuote(t, side, amt){
 }
 function scheduleSwapQuote(t, side, amt, done){
   if(!(amt > 0)) return;
-  if(!t.dex && SWAPQ.nob && SWAPQ.nob[t.id] && Date.now() - SWAPQ.nob[t.id] < 600000) return;
+  if(!swapInfo(t) && SWAPQ.nob && SWAPQ.nob[t.id] && Date.now() - SWAPQ.nob[t.id] < 600000) return;
   var key = swapKey(t, side, amt), q = SWAPQ.data[key];
   if(q && Date.now() - q.t < (q.ok ? 20000 : 60000)) return;
   clearTimeout(SWAPQ.timer);
@@ -805,10 +810,10 @@ function scheduleSwapQuote(t, side, amt, done){
     var d = data[t.id], price = d && d.current_price;
     if(SWAPQ.busy) return;
     SWAPQ.busy = true;
-    (t.dex ? fetchSwapQuote(t, side, amt, price) : fetchBookQuote(t, side, amt))
+    (swapInfo(t) ? fetchSwapQuote(t, side, amt, price) : fetchBookQuote(t, side, amt))
       .catch(function(e){
         SWAPQ.data[key] = {ok:false, t:Date.now()};
-        if(!t.dex && e && (e.status === 400 || e.status === 404)){ SWAPQ.nob = SWAPQ.nob || {}; SWAPQ.nob[t.id] = Date.now(); }  // pas coté sur Binance
+        if(!swapInfo(t) && e && (e.status === 400 || e.status === 404)){ SWAPQ.nob = SWAPQ.nob || {}; SWAPQ.nob[t.id] = Date.now(); }  // pas coté sur Binance
       })
       .then(function(){ SWAPQ.busy = false; if(done) done(); });
   }, 500);
@@ -816,10 +821,11 @@ function scheduleSwapQuote(t, side, amt, done){
 function orderCost(t, amountUsd, side){
   var p = state.paper, d = t.id ? data[t.id] : null;
   if(p.feeMode === "fixed" || !d) return {pct:p.fee, fixed:true, parts:null};
-  var sq = swapLive(t, side || "buy", amountUsd);
-  return estimateCost({amount:amountUsd, dex:!!d.dex, liquidity:d.liquidity_usd, volume:d.total_volume,
-    chg24:d.price_change_percentage_24h, chain:d.chain, gasUsd: d.dex ? ((sq && sq.gas != null) ? sq.gas : gasUsdFor(d.chain)) : null,
-    swapPct: (sq && d.dex) ? sq.pct : null, bookPct: (sq && !d.dex) ? sq.pct : null});
+  var sq = swapLive(t, side || "buy", amountUsd), sw = swapInfo(t), onchain = !!sw;
+  var chain = onchain ? sw.chain : null;
+  return estimateCost({amount:amountUsd, dex:onchain, liquidity:d.liquidity_usd, volume:d.total_volume,
+    chg24:d.price_change_percentage_24h, chain:chain, gasUsd: onchain ? ((sq && sq.gas != null) ? sq.gas : gasUsdFor(chain)) : null,
+    swapPct: (sq && onchain) ? sq.pct : null, bookPct: (sq && !onchain) ? sq.pct : null});
 }
 function costText(c){
   if(c.fixed) return "frais et écart simulés (fixes) : " + c.pct + " %";
@@ -863,10 +869,10 @@ function runAutomation(){
           " (résultat " + (res.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(res.pnl)) + " " + cur + ").");
       }
     }
-    var hereBal = p.bal[chainOfId(t.id)] || 0;
+    var hereChain = tokenChain(t), hereBal = p.bal[hereChain] || 0;
     if(r.buy.on && autoBuyTrigger(r.buy.price, price, hereBal)){
       var spend = Math.min(hereBal, Math.round(hereBal * r.buy.fraction * 100) / 100);
-      var rb = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct);
+      var rb = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct, hereChain);
       r.buy.on = false; changed = true;
       if(rb.ok){
         p.log[0].auto = "achat auto";
@@ -1235,6 +1241,38 @@ function chartBlock(t, d){
 }
 
 function placeLabel(k){ return k === "cex" ? "Bourse" : (BR_CHAINS[k] ? BR_CHAINS[k].label : k); }
+function tokenChain(t){
+  var pos = t.id ? state.paper.pos[t.id] : null;
+  return t.dex ? t.dex.chain : ((pos && pos.chain) || t.chain || "base");
+}
+/* Un jeton se négocie « sur la blockchain » (échange décentralisé) dès qu'on connaît sa blockchain et son contrat. */
+function swapInfo(t){
+  if(t.dex) return t.dex;
+  if(t.chain && t.addr && USDC_ADDR[t.chain]){ return t.swap || (t.swap = {chain:t.chain, addr:t.addr}); }
+  return null;
+}
+var CG_PLAT = {ethereum:"ethereum", base:"base", "arbitrum-one":"arbitrum", "optimistic-ethereum":"optimism", "polygon-pos":"polygon",
+  "binance-smart-chain":"bsc", avalanche:"avalanche", solana:"solana"};
+var CHAIN_PREF = ["base", "arbitrum", "optimism", "ethereum", "polygon", "bsc", "avalanche", "solana"];
+/* Blockchain d'un jeton CoinGecko : parmi ses plateformes connues, la première dans l'ordre de préférence (Base d'abord). */
+function resolveChains(){
+  var todo = state.tokens.filter(function(t){ return t.id && !t.dex && !t.chain && !(t.chainTry && Date.now() - t.chainTry < 3600000); });
+  var chain = Promise.resolve();
+  todo.forEach(function(t){
+    chain = chain.then(function(){
+      t.chainTry = Date.now();
+      return api("/coins/" + encodeURIComponent(t.id) + "?localization=false&tickers=false&market_data=false&community_data=false&developer_data=false&sparkline=false")
+        .then(function(r){
+          var pl = (r && r.platforms) || {}, found = {};
+          Object.keys(pl).forEach(function(k){ if(CG_PLAT[k] && pl[k]) found[CG_PLAT[k]] = pl[k]; });
+          var pick = CHAIN_PREF.filter(function(c){ return found[c]; })[0];
+          if(pick){ t.chain = pick; t.addr = found[pick]; t.chains = Object.keys(found); }
+          save();
+        }).catch(function(){});
+    });
+  });
+  return chain.then(function(){ if(todo.length) render(); });
+}
 
 /* ----- Panneau d'ordre simulé, dans la carte du jeton (identique pour l'achat et la vente) ----- */
 function tradePanel(t, d){
@@ -1254,7 +1292,7 @@ function tradePanel(t, d){
   function showErr(msg){ err.textContent = msg; err.hidden = false; }
   function done(msg){ setFlash(msg, "ok"); ts.amount = null; save(); render(); }
 
-  var place = chainOfId(t.id);
+  var place = tokenChain(t);
   function balHere(){ return p.bal[place] || 0; }
   function spendFor(fr){ return Math.min(balHere(), Math.round(balHere() * fr * 100) / 100); }
   function manualAmt(){ var v = numOrNull(amtInput.value); return (v && v > 0) ? v : null; }
@@ -1335,7 +1373,7 @@ function tradePanel(t, d){
     h("button", {type:"button", class:"btn primary small", onclick:function(){
       if(buy){
         var spend = buySpend();
-        var r = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct);
+        var r = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct, place);
         if(!r.ok){ showErr(r.msg); return; }
         done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(spend) + " " + cur + ".");
       } else {
@@ -1424,6 +1462,7 @@ function card(t){
     var cl = capLabel(d.market_cap, state.cur);
     if(cl) chips.push(h("span", {class:"chip", text:cl}));
     if(d.market_cap_rank) chips.push(h("span", {class:"chip", text:"rang #" + d.market_cap_rank}));
+    if(!d.dex && t.chain) chips.push(h("span", {class:"chip", text:"sur " + placeLabel(t.chain)}));
     if(d.dex){
       chips.push(h("span", {class:"chip", text:"DEX · " + d.chain}));
       var lowLiq = d.liquidity_usd == null || d.liquidity_usd < 100000;
@@ -2222,31 +2261,31 @@ function renderWallet(){
 
   // 1) Simulation : fonds et positions par lieu (bourse ou blockchain)
   var p = state.paper, simTotal = p.cash;
-  var places = ["cex"].concat(Object.keys(BR_CHAINS));
+  var places = Object.keys(BR_CHAINS);
   var byPlace = {};
   Object.keys(p.pos).forEach(function(id){
     var pos = p.pos[id], tok = state.tokens.filter(function(t){ return t.id === id; })[0];
     var pr = priceOf(id) || pos.last;
     simTotal += pos.qty * pr;
-    var pl = chainOfId(id);
+    var pl = pos.chain || chainOfId(id);
     (byPlace[pl] = byPlace[pl] || []).push({sym:pos.sym, name:(tok && tok.name) || "", qty:pos.qty, price:pr});
   });
   var simKids = [h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Wallet simulé (argent fictif)"}), h("b", {class:"mono", text:fmtMoney(simTotal) + " " + cur})]),
-    h("p", {class:"note", text:"Chaque jeton se détient sur un endroit précis : un jeton décentralisé sur sa blockchain, un jeton de bourse sur ta bourse. Pour acheter, il faut des fonds au bon endroit : transfère-les ci-dessous ou depuis l'onglet Bridge."})];
+    h("p", {class:"note", text:"Chaque jeton se détient sur une blockchain précise, et tu l'achètes avec les fonds de cette blockchain. Tes fonds de départ sont sur Base : pour acheter un jeton d'une autre blockchain, transfère-les d'abord ci-dessous ou depuis l'onglet Bridge."})];
   places.forEach(function(k){
     var usdc = p.bal[k] || 0, list = byPlace[k] || [];
-    if(!(usdc > 0) && !list.length && k !== "cex") return;
+    if(!(usdc > 0) && !list.length && k !== "base") return;
     var val = usdc;
     list.forEach(function(a){ val += a.qty * a.price; });
     var rows = [assetRow({sym:"USDC", name:"liquidités simulées", qty:usdc, price:1})];
     list.sort(function(x, y){ return y.qty * y.price - x.qty * x.price; }).forEach(function(a){ rows.push(assetRow(a)); });
     simKids.push(h("div", {class:"wgroup"}, [h("div", {class:"whead"}, [
-      h("h3", {style:"margin:6px 0 0; font-size:.95rem", text: k === "cex" ? "Bourse (Binance, Revolut X…)" : placeLabel(k)}),
+      h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:placeLabel(k)}),
       h("b", {class:"mono", text:fmtMoney(val) + " " + cur})])].concat(rows)));
   });
 
   // Transfert simulé entre lieux
-  var TF = WAL.tf || (WAL.tf = {from:"cex", to:"base", amount:""});
+  var TF = WAL.tf || (WAL.tf = {from:"base", to:"solana", amount:""});
   function opts(sel, val){ places.forEach(function(k){ var o = h("option", {value:k, text:placeLabel(k)}); sel.appendChild(o); }); sel.value = val; }
   var fromSel = h("select", {id:"tf-from"}), toSel = h("select", {id:"tf-to"});
   opts(fromSel, TF.from); opts(toSel, TF.to);
@@ -2280,7 +2319,7 @@ function renderWallet(){
   simKids.push(tfInfo);
   simKids.push(h("div", {class:"acts"}, [goBtn, maxBtn]));
   simKids.push(tfMsg);
-  [TF.from, TF.to].forEach(function(k){ if(k !== "cex") refreshGas([k]); });
+  [TF.from, TF.to].forEach(function(k){ refreshGas([k]); });
   tfUpdate();
   root.appendChild(h("section", {class:"panel"}, simKids));
 
