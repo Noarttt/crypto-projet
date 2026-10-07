@@ -192,13 +192,33 @@ function mkAlerts(){ return {above:null, below:null, move:null}; }
 /* PAPER-CORE-START */
 function newPaper(cur, amount){
   var a = amount > 0 ? amount : 300;
-  return {cur: cur || "chf", start: a, cash: a, fee: 1, feeMode: "auto", pos: {}, log: []};
+  return {cur: cur || "chf", start: a, cash: a, bal: {cex: a}, fee: 1, feeMode: "auto", pos: {}, log: []};
+}
+/* Les fonds simulés sont répartis par lieu : "cex" (compte sur une bourse) ou une blockchain. Un jeton décentralisé
+   (id "dex:blockchain:paire") s'achète et se vend avec les fonds de sa blockchain ; les autres avec ceux de la bourse. */
+function chainOfId(id){ return String(id).indexOf("dex:") === 0 ? String(id).split(":")[1] : "cex"; }
+function balSum(p){ var s = 0; Object.keys(p.bal).forEach(function(k){ s += p.bal[k]; }); return s; }
+function paperTransfer(p, from, to, amount, cost){
+  amount = Number(amount); cost = Number(cost) || 0;
+  if(!p.bal) p.bal = {cex: p.cash};
+  if(from === to) return {ok:false, msg:"Choisis deux endroits différents."};
+  if(!(amount > 0)) return {ok:false, msg:"Montant invalide."};
+  if(cost < 0 || cost >= amount) return {ok:false, msg:"Le montant est trop faible par rapport aux frais du transfert."};
+  if(amount > (p.bal[from] || 0) + 1e-9) return {ok:false, msg:"Solde simulé insuffisant à l'endroit de départ."};
+  p.bal[from] = Math.max(0, (p.bal[from] || 0) - amount);
+  p.bal[to] = (p.bal[to] || 0) + amount - cost;
+  p.cash = balSum(p);
+  p.log.unshift({t:Date.now(), side:"transfer", from:from, to:to, sym:"USDC", amount:amount, fee:cost});
+  p.log = p.log.slice(0, 50);
+  return {ok:true, received:amount - cost, fee:cost};
 }
 function paperBuy(p, id, sym, spend, price, feePct){
   spend = Number(spend);
   if(!(spend > 0)) return {ok:false, msg:"Montant invalide."};
   if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
-  if(spend > p.cash + 1e-9) return {ok:false, msg:"Solde simulé insuffisant."};
+  if(!p.bal) p.bal = {cex: p.cash};
+  var chain = chainOfId(id);
+  if(spend > (p.bal[chain] || 0) + 1e-9) return {ok:false, msg:"Solde simulé insuffisant à cet endroit (" + (chain === "cex" ? "bourse" : chain) + ") : transfère des fonds depuis l'onglet Wallet ou Bridge."};
   var fee = spend * (feePct != null ? feePct : p.fee) / 100;
   var qty = (spend - fee) / price;
   var pos = p.pos[id];
@@ -206,7 +226,8 @@ function paperBuy(p, id, sym, spend, price, feePct){
   pos.qty += qty;
   pos.cost += spend;
   pos.last = price;
-  p.cash = Math.max(0, p.cash - spend);
+  p.bal[chain] = Math.max(0, (p.bal[chain] || 0) - spend);
+  p.cash = balSum(p);
   p.log.unshift({t:Date.now(), side:"buy", id:id, sym:sym, qty:qty, price:price, amount:spend, fee:fee});
   p.log = p.log.slice(0, 50);
   return {ok:true, qty:qty, fee:fee};
@@ -225,7 +246,10 @@ function paperSell(p, id, fraction, price, feePct){
   pos.qty -= qty;
   pos.cost -= costPart;
   pos.last = price;
-  p.cash += net;
+  if(!p.bal) p.bal = {cex: p.cash};
+  var sch = chainOfId(id);
+  p.bal[sch] = (p.bal[sch] || 0) + net;
+  p.cash = balSum(p);
   p.log.unshift({t:Date.now(), side:"sell", id:id, sym:sym, qty:qty, price:price, amount:net, fee:fee, pnl:net - costPart});
   p.log = p.log.slice(0, 50);
   if(fraction >= 0.999999 || pos.qty <= 0) delete p.pos[id];
@@ -376,6 +400,7 @@ function load(){
   if(!s) s = JSON.parse(JSON.stringify(DEFAULT));
   if(!s.paper || typeof s.paper.cash !== "number" || !s.paper.pos) s.paper = newPaper("usd", 300);
   if(!Array.isArray(s.paper.log)) s.paper.log = [];
+  if(!s.paper.bal || typeof s.paper.bal !== "object") s.paper.bal = {cex: s.paper.cash};
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
   if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
   if(!(s.bridge.amount > 0)) s.bridge.amount = 300;
@@ -838,8 +863,9 @@ function runAutomation(){
           " (résultat " + (res.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(res.pnl)) + " " + cur + ").");
       }
     }
-    if(r.buy.on && autoBuyTrigger(r.buy.price, price, p.cash)){
-      var spend = Math.min(p.cash, Math.round(p.cash * r.buy.fraction * 100) / 100);
+    var hereBal = p.bal[chainOfId(t.id)] || 0;
+    if(r.buy.on && autoBuyTrigger(r.buy.price, price, hereBal)){
+      var spend = Math.min(hereBal, Math.round(hereBal * r.buy.fraction * 100) / 100);
       var rb = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct);
       r.buy.on = false; changed = true;
       if(rb.ok){
@@ -1208,6 +1234,8 @@ function chartBlock(t, d){
   return h("div", {class:"chartbox"}, kids);
 }
 
+function placeLabel(k){ return k === "cex" ? "Bourse" : (BR_CHAINS[k] ? BR_CHAINS[k].label : k); }
+
 /* ----- Panneau d'ordre simulé, dans la carte du jeton (identique pour l'achat et la vente) ----- */
 function tradePanel(t, d){
   var p = state.paper;
@@ -1226,10 +1254,12 @@ function tradePanel(t, d){
   function showErr(msg){ err.textContent = msg; err.hidden = false; }
   function done(msg){ setFlash(msg, "ok"); ts.amount = null; save(); render(); }
 
-  function spendFor(fr){ return Math.min(p.cash, Math.round(p.cash * fr * 100) / 100); }
+  var place = chainOfId(t.id);
+  function balHere(){ return p.bal[place] || 0; }
+  function spendFor(fr){ return Math.min(balHere(), Math.round(balHere() * fr * 100) / 100); }
   function manualAmt(){ var v = numOrNull(amtInput.value); return (v && v > 0) ? v : null; }
   // Montant effectif (achat) et part effective (vente), selon saisie manuelle ou pourcentage
-  function buySpend(){ var m = manualAmt(); return m ? Math.min(p.cash, Math.round(m * 100) / 100) : spendFor(ts.fraction); }
+  function buySpend(){ var m = manualAmt(); return m ? Math.min(balHere(), Math.round(m * 100) / 100) : spendFor(ts.fraction); }
   function sellFrac(){ var m = manualAmt(); return m ? Math.min(1, m / (pos.qty * price)) : ts.fraction; }
 
   function updatePreview(){
@@ -1237,12 +1267,12 @@ function tradePanel(t, d){
     scheduleSwapQuote(t, buy ? "buy" : "sell", buy ? buySpend() : pos.qty * fr * price, updatePreview);
     if(buy){
       var spend = buySpend();
-      if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
+      if(!(spend > 0)){ preview.textContent = "Aucun fonds simulé sur " + placeLabel(place) + " : transfère-en depuis l'onglet Wallet ou Bridge."; return; }
       var cb = orderCost(t, spend);
       var fee = spend * cb.pct / 100;
       var qty = (spend - fee) / price;
       preview.textContent = "Achat de " + fmtMoney(spend) + " " + cur + " ≈ " + fmtQty(qty) + " " + t.sym +
-        " · coûts simulés ≈ " + fmtMoney(fee) + " " + cur + " (" + costText(cb) + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur;
+        " · coûts simulés ≈ " + fmtMoney(fee) + " " + cur + " (" + costText(cb) + ") · solde sur " + placeLabel(place) + " : " + fmtMoney(balHere()) + " " + cur;
     } else {
       var gross = pos.qty * fr * price;
       var cs = orderCost(t, gross, "sell");
@@ -1258,7 +1288,7 @@ function tradePanel(t, d){
   amtInput.addEventListener("input", function(){
     ts.amount = amtInput.value;
     var m = manualAmt();
-    if(m) pctLabel.textContent = buy ? "Montant saisi : " + fmtMoney(buySpend()) + " " + cur + (m > p.cash ? " (limité au solde simulé)" : "")
+    if(m) pctLabel.textContent = buy ? "Montant saisi : " + fmtMoney(buySpend()) + " " + cur + (m > balHere() ? " (limité au solde sur " + placeLabel(place) + ")" : "")
       : "Montant saisi : " + fmtMoney(Math.min(m, pos.qty * price)) + " " + cur + (m > pos.qty * price ? " (limité à la valeur de la position)" : "");
     else pctLabel.textContent = pctText(Math.round(ts.fraction * 100));
     bigBtns.forEach(function(x){ x.b.classList.toggle("sel", !m && x.pc === Math.round(ts.fraction * 100)); });
@@ -1277,7 +1307,7 @@ function tradePanel(t, d){
     pctLabel.textContent = pctText(v);
     updatePreview();
   };
-  function pctText(v){ return (buy ? "Part du solde à investir : " + v + " % du solde simulé" : "Part à vendre : " + v + " % de la position") + " (par tranche de 5 %)"; }
+  function pctText(v){ return (buy ? "Part du solde à investir : " + v + " % du solde sur " + placeLabel(place) : "Part à vendre : " + v + " % de la position") + " (par tranche de 5 %)"; }
   slider.addEventListener("input", function(){ setPct(Number(slider.value)); });
   var bigs = h("div", {class:"presets big"}, [25, 50, 75, 100].map(function(pc){
     var b = h("button", {type:"button", class:"btn big", onclick:function(){ setPct(pc); }, text: pc === 100 ? "All in" : pc + " %"});
@@ -1520,7 +1550,7 @@ function renderPaper(){
     var gainPct = p.start > 0 ? gain / p.start * 100 : 0;
     box.appendChild(h("div", {class:"stats"}, [
       h("div", {class:"stat"}, [h("b", {text:fmtMoney(total) + " " + cur}), h("span", {text:"valeur totale"})]),
-      h("div", {class:"stat"}, [h("b", {text:fmtMoney(p.cash) + " " + cur}), h("span", {text:"solde disponible"})]),
+      h("div", {class:"stat"}, [h("b", {text:fmtMoney(p.cash) + " " + cur}), h("span", {text:"liquidités (total)"})]),
       h("div", {class:"stat"}, [h("b", {class:dir(gain), text:(gain >= 0 ? "+" : "−") + fmtMoney(Math.abs(gain)) + " " + cur}), h("span", {text:fmtPct(gainPct) + " depuis le départ"})])
     ]));
   }
@@ -1529,6 +1559,7 @@ function renderPaper(){
   var hist = h("details", {}, [h("summary", {text:"Historique (" + p.log.length + ")"})]);
   if(p.log.length){
     var ul = h("ul", {class:"log"}, p.log.slice(0, 20).map(function(e){
+      if(e.side === "transfer") return h("li", {text:dateStr(e.t) + " · Transfert " + fmtMoney(e.amount) + " " + cur + " : " + placeLabel(e.from) + " → " + placeLabel(e.to) + " · frais " + fmtMoney(e.fee) + " " + cur});
       var line = dateStr(e.t) + " · " + (e.auto ? "[" + e.auto + "] " : "") + (e.side === "buy" ? "Achat " : "Vente ") + fmtQty(e.qty) + " " + e.sym + " à " + fmtPrice(e.price) + " " + cur +
         " · " + fmtMoney(e.amount) + " " + cur + (e.side === "sell" && e.pnl != null ? " · résultat " + (e.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(e.pnl)) : "");
       return h("li", {text:line});
@@ -1834,6 +1865,7 @@ var USDC_ADDR = {
 };
 var LIFI_KEY = {across:"across", debridge:"debridge", stargate:"stargateV2", cctp:"cctp", mayan:"mayan", synapse:"synapse", hop:"hop"};
 var DUMMY_EVM = "0x552008c0f6870c2f77e5cC1d2eb9bdff03e30Ea0", DUMMY_SOL = "GDfnEsia2WLAW5t8yx2X5j2mkfA74i5kwGdDuZHt7XmG";
+var BRMSG = null;
 var LQ = {data:{}, lastKey:"", lastUpdate:0, lifiPause:0, timersOn:false, lifiBusy:false, acrossBusy:false};
 function usdcDec(chain){ return chain === "bsc" ? 18 : 6; }
 function usdcUnits(amount, chain){ return (BigInt(Math.round(amount * 1e6)) * (BigInt(10) ** BigInt(usdcDec(chain))) / BigInt(1000000)).toString(); }
@@ -1998,7 +2030,15 @@ function renderBridge(){
     if(b.b.url) links.push(h("a", {class:"btn primary small", href:b.b.url, target:"_blank", rel:"noopener noreferrer", text:"Ouvrir " + b.b.name + " ↗"}));
     links.push(h("a", {class:"btn small", href:"https://jumper.exchange/?fromChain=" + BR_CHAINS[B.from].id + "&toChain=" + BR_CHAINS[B.to].id,
       target:"_blank", rel:"noopener noreferrer", text:"Comparer sur Jumper ↗"}));
+    links.push(h("button", {type:"button", class:"btn small", onclick:function(){
+      var r = paperTransfer(state.paper, B.from, B.to, B.amount, b.cost);
+      BRMSG = r.ok ? {ok:true, text:"Transfert simulé : " + fmtMoney(B.amount) + " $ de " + placeLabel(B.from) + " vers " + placeLabel(B.to) + " via " + b.b.name + ", " + fmtMoney(r.received) + " $ reçus (frais " + fmtMoney(r.fee) + " $). Visible dans l'onglet Wallet."}
+        : {ok:false, text:r.msg};
+      if(r.ok) save();
+      renderBridge();
+    }, text:"Simuler ce transfert"}));
     kids.push(h("div", {class:"acts"}, links));
+    if(BRMSG) kids.push(h("p", {class:"banner " + (BRMSG.ok ? "ok" : "err"), text:BRMSG.text}));
     if(!b.b.url) kids.push(h("p", {class:"note", text:"CCTP n'a pas d'interface officielle : utilise un portefeuille ou un agrégateur compatible (Jumper)."}));
     kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (touche une ligne pour le choisir)"}));
     kids.push(h("ul", {class:"brlist"}, pk.list.map(function(x){
@@ -2157,6 +2197,21 @@ function chainValue(c){
   c.tokens.forEach(function(t){ if(t.price > 0) v += t.qty * t.price; });
   return v;
 }
+function transferCost(from, to, amount){
+  if(!(amount > 0) || from === to) return null;
+  var endChain = from === "cex" ? to : (to === "cex" ? from : null);
+  if(endChain){
+    var gl = gasUsdFor(endChain), g = gl != null ? gl : (GAS_USD[endChain] != null ? GAS_USD[endChain] : 0.5);
+    return {cost:g, time:120, label:"dépôt ou retrait entre la bourse et " + placeLabel(endChain) + " : frais réseau ≈ gas, " + (gl != null ? "en direct" : "valeur moyenne") + ", estimation logique"};
+  }
+  var gs = gasUsdFor(from), srcGas = gs != null ? gs : (GAS_USD[from] != null ? GAS_USD[from] : 0.5);
+  var B = state.bridge, same = B.from === from && B.to === to;
+  var pk = pickBridge(from, to, amount, srcGas, (same && B.amount === amount) ? liveQuotes() : null);
+  if(!pk) return null;
+  var chosen = pk.best;
+  if(same && B.pick && B.pick !== "auto"){ var m = pk.list.filter(function(x){ return x.b.k === B.pick; })[0]; if(m) chosen = m; }
+  return {cost:chosen.cost, time:chosen.time, label:"pont " + chosen.b.name + (chosen.live ? ", devis en direct" : ", estimation")};
+}
 function renderWallet(){
   var root = $("view-wallet");
   var ae = document.activeElement;
@@ -2165,23 +2220,68 @@ function renderWallet(){
   root.textContent = "";
   var cur = CUR_SYMBOL[state.cur];
 
-  // 1) Simulation
-  var p = state.paper, simGroups = {}, simTotal = p.cash;
+  // 1) Simulation : fonds et positions par lieu (bourse ou blockchain)
+  var p = state.paper, simTotal = p.cash;
+  var places = ["cex"].concat(Object.keys(BR_CHAINS));
+  var byPlace = {};
   Object.keys(p.pos).forEach(function(id){
     var pos = p.pos[id], tok = state.tokens.filter(function(t){ return t.id === id; })[0];
-    var chain = tok && tok.dex ? tok.dex.chain : "centralisé";
-    var pr = priceOf(id) || pos.last, val = pos.qty * pr;
-    simTotal += val;
-    (simGroups[chain] = simGroups[chain] || []).push({sym:pos.sym, name:(tok && tok.name) || "", qty:pos.qty, price:pr});
+    var pr = priceOf(id) || pos.last;
+    simTotal += pos.qty * pr;
+    var pl = chainOfId(id);
+    (byPlace[pl] = byPlace[pl] || []).push({sym:pos.sym, name:(tok && tok.name) || "", qty:pos.qty, price:pr});
   });
-  var simKids = [h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Simulation (argent fictif)"}), h("b", {class:"mono", text:fmtMoney(simTotal) + " " + cur})]),
-    h("div", {class:"wrow"}, [h("div", {class:"nm", text:"Solde simulé (liquidités)"}), h("div", {class:"mono", text:fmtMoney(p.cash) + " " + cur})])];
-  var simChains = Object.keys(simGroups);
-  if(!simChains.length) simKids.push(h("p", {class:"note", text:"Aucune position simulée ouverte."}));
-  simChains.forEach(function(ch){
-    simKids.push(h("div", {class:"wgroup"}, [h("h3", {style:"margin:6px 0 0; font-size:.95rem", text: ch === "centralisé" ? "Jetons de bourses (suivis via CoinGecko)" : chainLabel(ch)})]
-      .concat(simGroups[ch].map(assetRow))));
+  var simKids = [h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Wallet simulé (argent fictif)"}), h("b", {class:"mono", text:fmtMoney(simTotal) + " " + cur})]),
+    h("p", {class:"note", text:"Chaque jeton se détient sur un endroit précis : un jeton décentralisé sur sa blockchain, un jeton de bourse sur ta bourse. Pour acheter, il faut des fonds au bon endroit : transfère-les ci-dessous ou depuis l'onglet Bridge."})];
+  places.forEach(function(k){
+    var usdc = p.bal[k] || 0, list = byPlace[k] || [];
+    if(!(usdc > 0) && !list.length && k !== "cex") return;
+    var val = usdc;
+    list.forEach(function(a){ val += a.qty * a.price; });
+    var rows = [assetRow({sym:"USDC", name:"liquidités simulées", qty:usdc, price:1})];
+    list.sort(function(x, y){ return y.qty * y.price - x.qty * x.price; }).forEach(function(a){ rows.push(assetRow(a)); });
+    simKids.push(h("div", {class:"wgroup"}, [h("div", {class:"whead"}, [
+      h("h3", {style:"margin:6px 0 0; font-size:.95rem", text: k === "cex" ? "Bourse (Binance, Revolut X…)" : placeLabel(k)}),
+      h("b", {class:"mono", text:fmtMoney(val) + " " + cur})])].concat(rows)));
   });
+
+  // Transfert simulé entre lieux
+  var TF = WAL.tf || (WAL.tf = {from:"cex", to:"base", amount:""});
+  function opts(sel, val){ places.forEach(function(k){ var o = h("option", {value:k, text:placeLabel(k)}); sel.appendChild(o); }); sel.value = val; }
+  var fromSel = h("select", {id:"tf-from"}), toSel = h("select", {id:"tf-to"});
+  opts(fromSel, TF.from); opts(toSel, TF.to);
+  var tfAmt = h("input", {id:"tf-amt", type:"text", inputmode:"decimal", placeholder:"Montant en $", value:TF.amount, autocomplete:"off"});
+  var tfInfo = h("p", {class:"note", text:""});
+  var tfMsg = h("p", {class:WAL.tfMsgOk ? "banner ok" : "banner err", hidden: WAL.tfMsg ? null : "hidden", text:WAL.tfMsg || ""});
+  function tfUpdate(){
+    TF.amount = tfAmt.value;
+    var amt = numOrNull(tfAmt.value), c = transferCost(TF.from, TF.to, amt);
+    if(TF.from === TF.to) tfInfo.textContent = "Choisis deux endroits différents.";
+    else if(!amt) tfInfo.textContent = "Solde disponible au départ : " + fmtMoney(p.bal[TF.from] || 0) + " " + cur + ".";
+    else if(!c) tfInfo.textContent = "Aucun pont de ma liste ne relie ces deux blockchains.";
+    else tfInfo.textContent = "Frais ≈ " + fmtMoney(c.cost) + " $ (" + c.label + ") · durée " + fmtDuration(c.time) + " · tu reçois ≈ " + fmtMoney(Math.max(0, amt - c.cost)) + " $ sur " + placeLabel(TF.to) + ". Solde au départ : " + fmtMoney(p.bal[TF.from] || 0) + " $.";
+  }
+  fromSel.addEventListener("change", function(){ TF.from = fromSel.value; fromSel.blur(); WAL.tfMsg = ""; renderWallet(); });
+  toSel.addEventListener("change", function(){ TF.to = toSel.value; toSel.blur(); WAL.tfMsg = ""; renderWallet(); });
+  tfAmt.addEventListener("input", tfUpdate);
+  var maxBtn = h("button", {type:"button", class:"btn small", onclick:function(){ TF.amount = String(Math.floor((p.bal[TF.from] || 0) * 100) / 100); renderWallet(); }, text:"Tout le solde"});
+  var goBtn = h("button", {type:"button", class:"btn primary small", onclick:function(){
+    var amt = numOrNull(tfAmt.value), c = transferCost(TF.from, TF.to, amt);
+    if(!amt || !c){ WAL.tfMsg = "Indique un montant et un trajet valides."; WAL.tfMsgOk = false; renderWallet(); return; }
+    var r = paperTransfer(p, TF.from, TF.to, amt, c.cost);
+    if(!r.ok){ WAL.tfMsg = r.msg; WAL.tfMsgOk = false; }
+    else { WAL.tfMsg = "Transfert simulé : " + fmtMoney(amt) + " $ de " + placeLabel(TF.from) + " vers " + placeLabel(TF.to) + ", " + fmtMoney(r.received) + " $ reçus (frais " + fmtMoney(r.fee) + " $)."; WAL.tfMsgOk = true; TF.amount = ""; save(); }
+    renderWallet();
+  }, text:"Transférer (simulé)"});
+  simKids.push(h("h3", {style:"margin:10px 0 0; font-size:.95rem", text:"Transférer des fonds simulés"}));
+  simKids.push(h("label", {class:"field", for:"tf-from"}, ["De", fromSel]));
+  simKids.push(h("label", {class:"field", for:"tf-to"}, ["Vers", toSel]));
+  simKids.push(h("label", {class:"field", for:"tf-amt"}, ["Montant (USDC)", tfAmt]));
+  simKids.push(tfInfo);
+  simKids.push(h("div", {class:"acts"}, [goBtn, maxBtn]));
+  simKids.push(tfMsg);
+  [TF.from, TF.to].forEach(function(k){ if(k !== "cex") refreshGas([k]); });
+  tfUpdate();
   root.appendChild(h("section", {class:"panel"}, simKids));
 
   // 2) Portefeuilles réels en lecture seule
