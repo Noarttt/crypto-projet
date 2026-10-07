@@ -194,11 +194,10 @@ function mkAlerts(){ return {above:null, below:null, move:null}; }
 
 /* PAPER-CORE-START */
 var START_GAS_USD = 5;
-/* Au départ : tout sur Base, dont 5 $ en ETH pour payer le gas (chaque action sur une blockchain se paie avec sa monnaie native). */
+/* Au départ : tout le capital est en ETH sur Base (il sert au gas et se convertit en USDC pour acheter ou transférer). */
 function newPaper(cur, amount, natPrice){
-  var a = amount > 0 ? amount : 300;
-  var g = Math.min(START_GAS_USD, a * 0.05), px = natPrice > 0 ? natPrice : 2700;
-  return {cur: cur || "chf", start: a, cash: a - g, bal: {base: a - g}, nat: {base: g / px}, fee: 1, feeMode: "auto", pos: {}, log: []};
+  var a = amount > 0 ? amount : 300, px = natPrice > 0 ? natPrice : 2700;
+  return {cur: cur || "chf", start: a, cash: 0, bal: {base: 0}, nat: {base: a / px}, fee: 1, feeMode: "auto", pos: {}, log: []};
 }
 /* Les fonds simulés sont répartis par blockchain (au départ, tout est sur Base). Un jeton s'achète et se vend avec les
    fonds de sa propre blockchain : celle de sa paire pour un jeton décentralisé (id "dex:blockchain:paire"), sinon celle
@@ -240,6 +239,25 @@ function paperBuyNative(p, chain, usd, pct, gas, natPrice){
   p.log = p.log.slice(0, 50);
   return {ok:true, qty:qty, fee:fee};
 }
+/* Conversion inverse : monnaie native -> USDC (le gas de cette opération est prélevé sur la monnaie native restante). */
+function paperSellNative(p, chain, usd, pct, gas, natPrice){
+  usd = Number(usd);
+  if(!(usd > 0)) return {ok:false, msg:"Montant invalide."};
+  if(!(natPrice > 0)) return {ok:false, msg:"Prix de la monnaie native indisponible."};
+  if(!p.bal) p.bal = {base: p.cash};
+  if(!p.nat) p.nat = {};
+  var have = p.nat[chain] || 0, qty = usd / natPrice, g = checkGas(p, chain, gas);
+  if(!g.ok) return {ok:false, msg:g.msg};
+  if(qty + (g.qty || 0) > have + 1e-12) return {ok:false, msg:"Pas assez de monnaie native sur " + chain + " (il faut garder de quoi payer le gas)."};
+  var fee = usd * (pct || 0) / 100;
+  p.nat[chain] = Math.max(0, have - qty);
+  payGas(p, chain, g.qty);
+  p.bal[chain] = (p.bal[chain] || 0) + usd - fee;
+  p.cash = balSum(p);
+  p.log.unshift({t:Date.now(), side:"convert", chain:chain, sym:"USDC", amount:usd, fee:fee, qty:usd - fee, gasUsd:gas ? gas.usd : 0, toUsdc:true});
+  p.log = p.log.slice(0, 50);
+  return {ok:true, usdc:usd - fee, fee:fee};
+}
 function paperTransfer(p, from, to, amount, cost, opts){
   amount = Number(amount); cost = Number(cost) || 0;
   if(!p.bal) p.bal = {base: p.cash};
@@ -270,7 +288,7 @@ function paperBuy(p, id, sym, spend, price, feePct, chainArg, gas){
   if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
   if(!p.bal) p.bal = {base: p.cash};
   var chain = (p.pos[id] && p.pos[id].chain) || chainArg || chainOfId(id);
-  if(spend > (p.bal[chain] || 0) + 1e-9) return {ok:false, msg:"Solde simulé insuffisant sur " + chain + " : transfère des fonds depuis l'onglet Wallet ou Bridge."};
+  if(spend > (p.bal[chain] || 0) + 1e-9) return {ok:false, msg:"Solde simulé insuffisant sur " + chain + " : transfère des fonds depuis l'onglet Wallet ou Bridge, ou convertis de l'ETH en USDC (Wallet > ta blockchain)."};
   var gchk = checkGas(p, chain, gas);
   if(!gchk.ok) return {ok:false, msg:gchk.msg};
   var fee = spend * (feePct != null ? feePct : p.fee) / 100;
@@ -468,6 +486,11 @@ function load(){
     s.paper.nat = {base: g0 / 2700};
     s.migratedGas = true;
   }
+  if(!s.paper.allEth && !Object.keys(s.paper.pos).length && !s.paper.log.length && s.paper.cur === "usd" && s.paper.bal.base > 0 && Object.keys(s.paper.bal).length === 1){
+    s.paper.nat.base = (s.paper.nat.base || 0) + s.paper.bal.base / 2700;
+    s.paper.bal.base = 0; s.paper.cash = 0; s.migratedEth = true;
+  }
+  s.paper.allEth = true;
   if(s.paper.bal.cex != null){ s.paper.bal.base = (s.paper.bal.base || 0) + s.paper.bal.cex; delete s.paper.bal.cex; }
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
   if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
@@ -502,7 +525,11 @@ var tradeUI = {};         // par jeton : {side:"buy"|"sell", fraction}
 var flash = null;         // {text, t, kind}
 var resetAsk = false;
 var simStartDraft = null; // capital de départ en cours de saisie
-if(state.migratedGas){
+if(state.migratedEth){
+  delete state.migratedEth; delete state.migratedGas;
+  save();
+  flash = {text:"Ton capital de départ est maintenant en ETH sur Base. Convertis-en en USDC dans Wallet > Base pour acheter ou transférer.", t:Date.now(), kind:"ok"};
+} else if(state.migratedGas){
   delete state.migratedGas;
   save();
   flash = {text:"Chaque action sur une blockchain se paie maintenant en gas (ETH sur Base, SOL sur Solana…). 5 $ de tes fonds sur Base ont été convertis en ETH pour le gas.", t:Date.now(), kind:"ok"};
@@ -2476,6 +2503,7 @@ function renderWallet(){
       h("p", {class:"note", text:"Gas : " + fmtQty(c.nat) + " " + nsym + " ≈ " + fmtMoney(c.natUsd) + " $ · environ " + ops + " action(s) possible(s) (une action ≈ " + (gi.usd < 0.1 ? gi.usd.toFixed(3) : gi.usd.toFixed(2)) + " $, " + (gi.live ? "gas en direct" : "valeur moyenne") + ")."}),
       low ? h("p", {class:"banner err", text:ops === 0 ? "Plus de gas sur " + placeLabel(k) + " : tu ne peux plus acheter, vendre ni transférer depuis cette blockchain. Convertis de l'USDC en " + nsym + " ci-dessous ou reçois du gas depuis une autre blockchain." : "Gas bas sur " + placeLabel(k) + " : prévois d'en ajouter."}) : null
     ])));
+    root.appendChild(h("section", {class:"panel"}, [h("h3", {style:"margin:0; font-size:.95rem", text:"Convertir de " + nsym + " en USDC sur " + placeLabel(k)})].concat(convertToUsdcForm(k, c, gi))));
     root.appendChild(h("section", {class:"panel"}, [h("h3", {style:"margin:0; font-size:.95rem", text:"Convertir de l'USDC en " + nsym + " (gas) sur " + placeLabel(k)})].concat(convertForm(k, c, gi))));
     root.appendChild(h("section", {class:"panel"}, [h("h3", {style:"margin:0; font-size:.95rem", text:"Transférer depuis " + placeLabel(k)})].concat(transferForm(ch, chains, k))));
   }
@@ -2484,6 +2512,32 @@ function renderWallet(){
   var box = h("div", {class:"view"});
   renderRealWallets(box);
   root.appendChild(h("details", {class:"panel"}, [h("summary", {style:"cursor:pointer; font-weight:600", text:"Portefeuilles réels (lecture seule)"}), box]));
+}
+function convertToUsdcForm(k, c, gi){
+  var CV = WAL.cu || (WAL.cu = {amount:""});
+  var nsym = NATIVE[k].sym, pct = 0.5;
+  var inp = h("input", {id:"cu-amt", type:"text", inputmode:"decimal", placeholder:"Montant en $", value:CV.amount, autocomplete:"off"});
+  var info = h("p", {class:"note", text:""});
+  var msg = h("p", {class:WAL.cuOk ? "banner ok" : "banner err", hidden: WAL.cuMsg ? null : "hidden", text:WAL.cuMsg || ""});
+  var gl = gasLine(gi);
+  var spare = Math.max(0, c.natUsd - gi.usd * 1.5);
+  function upd(){
+    CV.amount = inp.value;
+    var a = numOrNull(inp.value);
+    info.textContent = (a ? "Tu reçois ≈ " + fmtMoney(a * (1 - pct / 100)) + " $ d'USDC (frais estimés " + pct + " %, estimation logique). " : nsym + " convertible en gardant du gas : ≈ " + fmtMoney(spare) + " $. ") + gl.text;
+  }
+  inp.addEventListener("input", upd);
+  var go = h("button", {type:"button", class:"btn primary small", onclick:function(){
+    var a = numOrNull(inp.value);
+    var r = a ? paperSellNative(state.paper, k, a, pct, gi, natPriceOf(k)) : {ok:false, msg:"Indique un montant valide."};
+    WAL.cuOk = r.ok;
+    WAL.cuMsg = r.ok ? "Converti : " + fmtMoney(a) + " $ de " + nsym + " en " + fmtMoney(r.usdc) + " $ d'USDC sur " + placeLabel(k) + "." : r.msg;
+    if(r.ok){ CV.amount = ""; save(); }
+    renderWallet();
+  }, text:"Convertir en USDC"});
+  var mx = h("button", {type:"button", class:"btn small", onclick:function(){ CV.amount = String(Math.floor(spare * 100) / 100); renderWallet(); }, text:"Tout sauf le gas"});
+  upd();
+  return [h("label", {class:"field", for:"cu-amt"}, ["Montant à convertir (en $)", inp]), info, h("div", {class:"acts"}, [go, mx]), msg];
 }
 function convertForm(k, c, gi){
   var CV = WAL.cv || (WAL.cv = {amount:""});
