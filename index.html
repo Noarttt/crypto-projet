@@ -86,6 +86,8 @@ button{cursor:pointer}
 .trade label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
 .trade input{border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:var(--surface); font:400 .95rem var(--mono); min-width:0; width:100%}
 .presets{display:flex; gap:6px; flex-wrap:wrap}
+.slider{display:flex; align-items:center; gap:8px}
+.trade .slider input[type="range"]{flex:1; width:auto; padding:0; border:0; background:none; accent-color:var(--accent)}
 details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weight:500}
 .alerts{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:10px}
 .alerts label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
@@ -595,19 +597,21 @@ function tradePanel(t, d){
       preview.textContent = "Vente de " + fmtQty(pos.qty * tradeUI.fraction) + " " + t.sym + " ≈ " + fmtMoney(gross - fee) + " " + cur +
         " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ") · résultat ≈ " + (pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(pnl)) + " " + cur;
     };
-    var btns = [];
-    var seg = h("div", {class:"presets"}, [0.25, 0.5, 0.75, 1].map(function(fr){
-      var b = h("button", {type:"button", class:"btn small", "aria-pressed": String(tradeUI.fraction === fr), onclick:function(){
-        tradeUI.fraction = fr;
-        btns.forEach(function(x){ x.b.style.outline = x.fr === fr ? "2px solid var(--accent)" : "none"; });
-        updateSell();
-      }, text: fr === 1 ? "Tout" : Math.round(fr * 100) + " %"});
-      if(tradeUI.fraction === fr) b.style.outline = "2px solid var(--accent)";
-      btns.push({b:b, fr:fr});
-      return b;
-    }));
-    box.appendChild(h("p", {class:"note", text:"Part de la position à vendre (simulation) :"}));
-    box.appendChild(seg);
+    var pctLabel = h("p", {class:"note", text:""});
+    var slider = h("input", {id:"sell-" + t.sym, type:"range", min:"5", max:"100", step:"5", value:String(Math.round(tradeUI.fraction * 100)), "aria-label":"Part de la position à vendre, par tranche de 5 %"});
+    var setPct = function(v){
+      v = Math.max(5, Math.min(100, Math.round(v / 5) * 5));
+      tradeUI.fraction = v / 100;
+      slider.value = String(v);
+      pctLabel.textContent = "Part à vendre : " + v + " % de la position (par tranche de 5 %)";
+      updateSell();
+    };
+    slider.addEventListener("input", function(){ setPct(Number(slider.value)); });
+    var minus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 - 5); }, text:"−5 %"});
+    var plus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 + 5); }, text:"+5 %"});
+    setPct(tradeUI.fraction * 100);
+    box.appendChild(pctLabel);
+    box.appendChild(h("div", {class:"slider"}, [minus, slider, plus]));
     box.appendChild(preview);
     box.appendChild(err);
     box.appendChild(h("div", {class:"acts"}, [
