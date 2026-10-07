@@ -156,7 +156,8 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .brbest{border:1px solid var(--accent); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:6px; background:var(--bg)}
 .brbest .big{font-size:1.15rem; font-weight:600}
 .brlist{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
-.brlist li{border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; justify-content:space-between; gap:10px; font-size:.88rem; align-items:center}
+.brlist li .after{flex-basis:100%}
+.brlist li{flex-wrap:wrap; border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; justify-content:space-between; gap:10px; font-size:.88rem; align-items:center}
 .brlist li button{border:0; background:none; cursor:pointer; text-align:left; padding:0; color:inherit; font:inherit; width:100%; display:flex; justify-content:space-between; gap:10px}
 .brlist .tick{color:var(--up); font-weight:800; font-size:1.1em}
 .brlist li:has(.tick){border-color:var(--up); box-shadow:inset 0 0 0 1px var(--up)}
@@ -2409,36 +2410,60 @@ function renderBridge(){
       h("div", {class:"note", text:why}),
       b.live ? h("div", {class:"note", text:"Devis en direct, actualisé automatiquement."}) : h("div", {class:"note", text:"Estimation (pas encore de devis en direct pour ce pont)" + (b.b.est ? ", moins sûre que les autres." : ".")})
     ]));
-    var giB = gasInfo(B.from, b.gas), glB = gasLine(giB);
-    var recvB = Math.max(0, B.amount - b.fee), dropB = Math.min(recvB, parseDrop(B.gasDrop, autoDrop(B.to, recvB)));
-    var destNatB = (((state.paper.nat || {})[B.to]) || 0) * natPriceOf(B.to);
-    kids.push(h("p", {class:"banner " + (glB.ok ? "ok" : "err"), text: glB.ok
-      ? "Gas de départ : suffisant."
-      : "Bridge impossible : gas insuffisant sur " + BR_CHAINS[B.from].label + ". Convertis de l'USDC en " + NATIVE[B.from].sym + " dans l'onglet Wallet (ou reçois du gas depuis une autre blockchain)."}));
-    kids.push(h("p", {class:"note", text: "Arrivée : tu recevras ≈ " + fmtMoney(recvB - dropB) + " $ d'USDC" + (dropB > 0 ? " + " + fmtMoney(dropB) + " $ de " + NATIVE[B.to].sym + " pour le gas" : "") + " sur " + BR_CHAINS[B.to].label + "." +
-      ((dropB === 0 && destNatB < gasInfo(B.to).usd) ? " Attention : sans " + NATIVE[B.to].sym + " sur " + BR_CHAINS[B.to].label + ", tu n'y pourras ni acheter, ni vendre, ni retransférer : prévois du gas à recevoir." : "")}));
-    var links = [];
-    if(b.b.url) links.push(h("a", {class:"btn primary small", href:b.b.url, target:"_blank", rel:"noopener noreferrer", text:"Ouvrir " + b.b.name + " ↗"}));
-    links.push(h("a", {class:"btn small", href:"https://jumper.exchange/?fromChain=" + BR_CHAINS[B.from].id + "&toChain=" + BR_CHAINS[B.to].id,
-      target:"_blank", rel:"noopener noreferrer", text:"Comparer sur Jumper ↗"}));
-    var simBtn = h("button", {type:"button", class:"btn small", onclick:function(){
+    function afterBridge(x){
+      var p = state.paper, from = B.from, to = B.to, amt = B.amount;
+      var gi = gasInfo(from, x.gas), recv = Math.max(0, amt - x.fee);
+      var drop = Math.min(recv, parseDrop(B.gasDrop, autoDrop(to, recv)));
+      var fromUsdc = (p.bal && p.bal[from]) || 0, fromNat = (p.nat && p.nat[from]) || 0, toUsdc = (p.bal && p.bal[to]) || 0, toNat = (p.nat && p.nat[to]) || 0;
+      var gasQty = gi.price > 0 ? gi.usd / gi.price : 0, pTo = natPriceOf(to), dropQty = drop > 0 && pTo > 0 ? drop / pTo : 0;
+      return {gi:gi, recv:recv, drop:drop, gasQty:gasQty, dropQty:dropQty, fromUsdc:fromUsdc, fromNat:fromNat, toUsdc:toUsdc, toNat:toNat,
+        fromUsdcAfter:fromUsdc - amt, fromNatAfter:fromNat - gasQty, toUsdcAfter:toUsdc + recv - drop, toNatAfter:toNat + dropQty,
+        enoughUsdc: fromUsdc + 1e-9 >= amt, enoughGas: fromNat + 1e-12 >= gasQty};
+    }
+    var A = afterBridge(b), giB = A.gi, dropB = A.drop, glB = gasLine(giB), destNatB = A.toNat * natPriceOf(B.to);
+    var symF = NATIVE[B.from].sym, symT = NATIVE[B.to].sym, pF = natPriceOf(B.from), pT = natPriceOf(B.to);
+    var canGo = A.enoughUsdc && A.enoughGas && B.amount > 0;
+    var why2 = !A.enoughUsdc ? "USDC insuffisants sur " + BR_CHAINS[B.from].label + " : tu as " + fmtMoney(A.fromUsdc) + " $, il en faut " + fmtMoney(B.amount) + " $. Convertis de la monnaie native en USDC dans Wallet."
+      : !A.enoughGas ? "Bridge impossible : gas insuffisant sur " + BR_CHAINS[B.from].label + " (il faut ≈ " + fmtMoney(giB.usd) + " $ de " + symF + ", tu en as ≈ " + fmtMoney(A.fromNat * pF) + " $). Convertis de l'USDC en " + symF + " dans l'onglet Wallet."
+      : "Solde et gas suffisants.";
+    kids.push(h("p", {class:"banner " + (canGo ? "ok" : "err"), text:why2}));
+    function sim(label, before, after, unit, bad){
+      return h("div", {class:"wrow"}, [h("div", {class:"nm", text:label}),
+        h("div", {class:"mono" + (bad ? " down" : "")}, [h("div", {text:before + " → " + after + " " + unit})])]);
+    }
+    kids.push(h("div", {class:"wgroup"}, [
+      h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Fonds après la transaction (" + b.b.name + ")"}),
+      sim("USDC · " + BR_CHAINS[B.from].label, fmtMoney(A.fromUsdc), fmtMoney(A.fromUsdcAfter), "$", !A.enoughUsdc),
+      sim(symF + " (gas) · " + BR_CHAINS[B.from].label, fmtQty(A.fromNat), fmtQty(Math.max(0, A.fromNatAfter)), symF + " ≈ " + fmtMoney(Math.max(0, A.fromNatAfter) * pF) + " $", !A.enoughGas),
+      sim("USDC · " + BR_CHAINS[B.to].label, fmtMoney(A.toUsdc), fmtMoney(A.toUsdcAfter), "$", false),
+      sim(symT + " (gas) · " + BR_CHAINS[B.to].label, fmtQty(A.toNat), fmtQty(A.toNatAfter), symT + " ≈ " + fmtMoney(A.toNatAfter * pT) + " $", false),
+      h("p", {class:"note", text:"Frais du pont " + fmtMoney(b.fee) + " $ prélevés sur le montant · gas " + fmtMoney(giB.usd) + " $ payé en " + symF + (A.drop > 0 ? " · " + fmtMoney(A.drop) + " $ du montant converti en " + symT + " pour le gas d'arrivée" : "") + " · arrivée " + (state.instantBridge ? "immédiate (mode instantané)" : "dans " + fmtDuration(b.time).replace("≈ ", "≈ ")) + "."}),
+      (A.drop === 0 && destNatB < gasInfo(B.to).usd) ? h("p", {class:"note", text:"Attention : sans " + symT + " sur " + BR_CHAINS[B.to].label + ", tu n'y pourras ni acheter, ni vendre, ni retransférer : prévois du gas à recevoir."}) : null
+    ]));
+    var goBtn = h("button", {type:"button", class:"btn primary big", style:"width:100%", onclick:function(){
       var r = paperTransferStart(state.paper, B.from, B.to, B.amount, b.fee, {gas:giB, drop:dropB, dropPrice:natPriceOf(B.to), dropSym:NATIVE[B.to].sym, time:bridgeDelay(b.time), name:b.b.name});
-      BRMSG = r.ok ? {ok:true, text:"Transfert lancé : " + fmtMoney(B.amount) + " $ de " + placeLabel(B.from) + " vers " + placeLabel(B.to) + " via " + b.b.name + " (frais du pont " + fmtMoney(r.fee) + " $ + gas " + fmtMoney(giB.usd) + " $). " + (r.pending ? fmtMoney(r.received) + " $ d'USDC" + (r.drop > 0 ? " + " + fmtMoney(r.drop) + " $ de gas" : "") + " arriveront dans " + fmtCountdown(r.secs * 1000) + "." : "Arrivée immédiate (mode instantané).")}
+      BRMSG = r.ok ? {ok:true, text:"Bridge lancé : " + fmtMoney(B.amount) + " $ de " + placeLabel(B.from) + " vers " + placeLabel(B.to) + " via " + b.b.name + " (frais du pont " + fmtMoney(r.fee) + " $ + gas " + fmtMoney(giB.usd) + " $). " + (r.pending ? fmtMoney(r.received) + " $ d'USDC" + (r.drop > 0 ? " + " + fmtMoney(r.drop) + " $ de gas" : "") + " arriveront dans " + fmtCountdown(r.secs * 1000) + "." : "Arrivée immédiate (mode instantané).")}
         : {ok:false, text:r.msg};
       if(r.ok) save();
       renderBridge();
-    }, text:"Simuler ce transfert"});
-    if(!glB.ok) simBtn.disabled = true;
-    links.push(simBtn);
+    }, text:"Bridge " + fmtMoney(B.amount) + " $ → " + BR_CHAINS[B.to].label + " via " + b.b.name});
+    if(!canGo) goBtn.disabled = true;
+    kids.push(goBtn);
+    var links = [];
+    if(b.b.url) links.push(h("a", {class:"btn small", href:b.b.url, target:"_blank", rel:"noopener noreferrer", text:"Ouvrir " + b.b.name + " ↗"}));
+    links.push(h("a", {class:"btn small", href:"https://jumper.exchange/?fromChain=" + BR_CHAINS[B.from].id + "&toChain=" + BR_CHAINS[B.to].id,
+      target:"_blank", rel:"noopener noreferrer", text:"Comparer sur Jumper ↗"}));
     kids.push(h("div", {class:"acts"}, links));
     if(BRMSG) kids.push(h("p", {class:"banner " + (BRMSG.ok ? "ok" : "err"), text:BRMSG.text}));
     if(!b.b.url) kids.push(h("p", {class:"note", text:"CCTP n'a pas d'interface officielle : utilise un portefeuille ou un agrégateur compatible (Jumper)."}));
     kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (touche une ligne pour le choisir)"}));
     kids.push(h("ul", {class:"brlist"}, pk.list.map(function(x){
+      var ax = afterBridge(x);
       return h("li", {}, [h("button", {type:"button", "aria-pressed":String(x === b), onclick:function(){ choosePick(x.b.k); }}, [
         h("span", {}, [x === b ? h("span", {class:"tick", "aria-label":"sélectionné", text:"✓ "}) : null, document.createTextNode(x.b.name + (x === pk.best ? " (recommandé)" : "") + (x.live ? " · en direct" : " · estimation"))]),
         h("span", {class:"mono", text:fmtMoney(x.cost) + " $ · " + x.pct.toFixed(2) + " % · " + fmtDuration(x.time)})
-      ])]);
+      ]), h("div", {class:"note after" + (ax.enoughUsdc && ax.enoughGas ? "" : " down"), text:
+        "Après : " + BR_CHAINS[B.from].label + " " + fmtMoney(ax.fromUsdcAfter) + " $ USDC + " + fmtQty(Math.max(0, ax.fromNatAfter)) + " " + symF + " · " + BR_CHAINS[B.to].label + " " + fmtMoney(ax.toUsdcAfter) + " $ USDC" + (ax.dropQty > 0 ? " + " + fmtQty(ax.toNat + ax.dropQty) + " " + symT : "") + (ax.enoughUsdc && ax.enoughGas ? "" : " · impossible (solde ou gas)")})]);
     })));
     if(manual) kids.push(h("div", {}, [h("button", {type:"button", class:"btn small", onclick:function(){ choosePick("auto"); }, text:"Revenir au choix automatique"})]));
   }
