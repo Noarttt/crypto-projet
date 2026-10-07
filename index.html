@@ -1,0 +1,562 @@
+<!doctype html>
+<html lang="fr">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+<meta name="theme-color" content="#0e151c">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-title" content="Veille crypto">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="apple-touch-icon" href="icon.svg">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<title>Veille crypto</title>
+<style>
+/* Concept : un carnet de veille, une ligne par jeton, les chiffres en police à chasse fixe. */
+:root{
+  --bg:#f4f6f8; --surface:#ffffff; --ink:#14202b; --muted:#5b6b79; --line:#dde3e9;
+  --accent:#1f5fd1; --accent-ink:#ffffff; --up:#14804a; --down:#c0392b;
+  --warn-bg:#fff1cc; --warn-ink:#5e4200; --err-bg:#fde4e1; --err-ink:#7a1f16;
+  --font:"IBM Plex Sans",system-ui,-apple-system,"Segoe UI",Roboto,sans-serif;
+  --mono:"IBM Plex Mono",ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  color-scheme:light;
+}
+@media (prefers-color-scheme: dark){
+  :root{
+    --bg:#0e151c; --surface:#16202a; --ink:#e6edf3; --muted:#93a3b2; --line:#26333f;
+    --accent:#6aa3ff; --accent-ink:#0b1420; --up:#4cc38a; --down:#ff7b6e;
+    --warn-bg:#3a2f10; --warn-ink:#f1d38a; --err-bg:#3c1b17; --err-ink:#ffb4aa;
+    color-scheme:dark;
+  }
+}
+*{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%}
+body{
+  margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 var(--font);
+  padding-block:calc(env(safe-area-inset-top,0px) + 16px) calc(env(safe-area-inset-bottom,0px) + 32px);
+  padding-inline:16px;
+}
+main{max-width:640px; margin-inline:auto; display:flex; flex-direction:column; gap:14px; min-width:0}
+h1{font-size:1.25rem; font-weight:600; margin:0; text-wrap:balance}
+button,input,select{font:inherit; color:inherit}
+button{cursor:pointer}
+:focus-visible{outline:2px solid var(--accent); outline-offset:2px}
+.top{display:flex; align-items:center; justify-content:space-between; gap:12px; flex-wrap:wrap}
+.status{font:400 .78rem/1.3 var(--mono); color:var(--muted)}
+.tools{display:flex; gap:8px; flex-wrap:wrap; align-items:center}
+.seg{display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface)}
+.seg button{border:0; background:transparent; padding:6px 12px; font-weight:500; color:var(--muted)}
+.seg button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink)}
+.btn{border:1px solid var(--line); background:var(--surface); border-radius:8px; padding:6px 12px; font-weight:500}
+.btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
+.banner{border-radius:8px; padding:10px 12px; font-size:.9rem}
+.banner.err{background:var(--err-bg); color:var(--err-ink)}
+.banner.alert{background:var(--warn-bg); color:var(--warn-ink)}
+.banner ul{margin:4px 0 0; padding-left:18px}
+.list{display:flex; flex-direction:column; gap:10px; margin:0; padding:0; list-style:none}
+.card{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px; min-width:0}
+.card.hit{border-color:var(--accent); box-shadow:0 0 0 1px var(--accent)}
+.row1{display:flex; justify-content:space-between; align-items:flex-start; gap:12px}
+.name{min-width:0}
+.sym{font-weight:600; font-size:1.05rem}
+.full{color:var(--muted); font-size:.85rem; overflow-wrap:anywhere}
+.chips{display:flex; gap:6px; flex-wrap:wrap; margin-top:4px}
+.chip{font-size:.72rem; border:1px solid var(--line); border-radius:999px; padding:1px 8px; color:var(--muted)}
+.chip.warn{background:var(--warn-bg); color:var(--warn-ink); border-color:transparent}
+.price{text-align:right; font:500 1.1rem/1.2 var(--mono); font-variant-numeric:tabular-nums}
+.chg{font:500 .85rem/1.3 var(--mono); font-variant-numeric:tabular-nums}
+.up{color:var(--up)} .down{color:var(--down)}
+.spark{display:block; width:100%; height:34px; color:var(--muted)}
+.spark.up{color:var(--up)} .spark.down{color:var(--down)}
+.stats{display:grid; grid-template-columns:repeat(3,minmax(0,1fr)); gap:8px}
+.stat{min-width:0}
+.stat b{display:block; font:500 .88rem/1.3 var(--mono); font-variant-numeric:tabular-nums}
+.stat span{font-size:.72rem; color:var(--muted)}
+details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weight:500}
+.alerts{display:grid; grid-template-columns:repeat(auto-fit,minmax(150px,1fr)); gap:10px; margin-top:10px}
+.alerts label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
+.alerts input{border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:var(--bg); font:400 .95rem var(--mono); min-width:0; width:100%}
+.remove{margin-top:10px; background:none; border:0; color:var(--down); padding:0; font-size:.85rem}
+.add{background:var(--surface); border:1px solid var(--line); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:10px}
+.add form{display:flex; gap:8px}
+.add input{flex:1; min-width:0; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--bg); text-transform:uppercase}
+.cands{display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none}
+.cands button{width:100%; text-align:left; border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:8px 10px}
+.note{font-size:.8rem; color:var(--muted); margin:0}
+.empty{background:var(--surface); border:1px dashed var(--line); border-radius:10px; padding:18px; color:var(--muted); text-align:center}
+@media (prefers-reduced-motion: no-preference){ .card{transition:border-color .2s} }
+</style>
+</head>
+<body>
+<main>
+  <div class="top">
+    <h1>Veille crypto</h1>
+    <div class="tools">
+      <div class="seg" role="group" aria-label="Devise">
+        <button type="button" id="cur-chf" aria-pressed="true">CHF</button>
+        <button type="button" id="cur-usd" aria-pressed="false">USD</button>
+      </div>
+      <button type="button" class="btn" id="refresh">Actualiser</button>
+    </div>
+  </div>
+  <div class="status" id="status" role="status">Chargement…</div>
+  <div id="banners"></div>
+  <ul class="list" id="list"></ul>
+  <section class="add" aria-label="Ajouter un jeton">
+    <form id="add-form">
+      <input id="add-sym" type="text" placeholder="Symbole (ex. GRT)" autocomplete="off" autocapitalize="characters" maxlength="12" aria-label="Symbole du jeton">
+      <button class="btn primary" type="submit">Chercher</button>
+    </form>
+    <ul class="cands" id="cands"></ul>
+    <p class="note" id="add-note">Plusieurs jetons peuvent porter le même symbole : choisis celui dont le nom et le rang correspondent au projet voulu.</p>
+  </section>
+  <p class="note" id="notif-row"></p>
+  <p class="note">Cours fournis par l'API publique de CoinGecko, avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. Information uniquement : ce n'est pas un conseil d'investissement et aucun ordre n'est passé ici.</p>
+</main>
+<script>
+(function(){
+"use strict";
+
+var LS_KEY = "veille-crypto.v1";
+var API = "https://api.coingecko.com/api/v3";
+
+function mkAlerts(){ return {above:null, below:null, move:null}; }
+var DEFAULT = {
+  cur: "chf",
+  interval: 60,
+  tokens: [
+    {sym:"MAGIC", id:"magic", alerts:mkAlerts()},
+    {sym:"NIL",   id:"nillion", alerts:mkAlerts()},
+    {sym:"ZETA",  id:"zetachain", alerts:mkAlerts()},
+    {sym:"BLESS", id:null, alerts:mkAlerts()},
+    {sym:"STRK",  id:"starknet", alerts:mkAlerts()}
+  ]
+};
+
+function load(){
+  try{
+    var raw = localStorage.getItem(LS_KEY);
+    if(raw){
+      var s = JSON.parse(raw);
+      if(s && Array.isArray(s.tokens)) return s;
+    }
+  }catch(e){}
+  return JSON.parse(JSON.stringify(DEFAULT));
+}
+function save(){
+  try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+}
+
+var state = load();
+var data = {};
+var fx = null;            // facteur CHF -> USD, pour classer la capitalisation
+var lastOk = null;
+var failCount = 0;
+var lastError = null;
+var loading = false;
+var rerun = false;        // une actualisation a été demandée pendant une requête en cours
+var timer = null;
+var active = {};          // symbole -> liste de messages d'alerte en cours
+var firedKeys = {};       // clé d'alerte -> true (pour ne notifier qu'au passage)
+var openIds = {};         // détails ouverts
+
+var $ = function(id){ return document.getElementById(id); };
+
+function h(tag, props, children){
+  var el = document.createElement(tag);
+  if(props){
+    Object.keys(props).forEach(function(k){
+      if(k === "class") el.className = props[k];
+      else if(k === "text") el.textContent = props[k];
+      else if(k.indexOf("on") === 0) el.addEventListener(k.slice(2), props[k]);
+      else el.setAttribute(k, props[k]);
+    });
+  }
+  (children || []).forEach(function(c){
+    if(c == null) return;
+    el.appendChild(typeof c === "string" ? document.createTextNode(c) : c);
+  });
+  return el;
+}
+
+/* ---------- Formats ---------- */
+var CUR_SYMBOL = {chf:"CHF", usd:"$"};
+function fmtPrice(v){
+  if(v == null || isNaN(v)) return "n/d";
+  var abs = Math.abs(v), opts;
+  if(abs >= 1000) opts = {maximumFractionDigits:0};
+  else if(abs >= 1) opts = {maximumFractionDigits:2, minimumFractionDigits:2};
+  else opts = {maximumSignificantDigits:4};
+  return v.toLocaleString("fr-CH", opts);
+}
+function fmtBig(v){
+  if(v == null || isNaN(v)) return "n/d";
+  if(v >= 1e9) return (v/1e9).toLocaleString("fr-CH",{maximumFractionDigits:2}) + " Md";
+  if(v >= 1e6) return (v/1e6).toLocaleString("fr-CH",{maximumFractionDigits:1}) + " M";
+  if(v >= 1e3) return (v/1e3).toLocaleString("fr-CH",{maximumFractionDigits:0}) + " k";
+  return v.toLocaleString("fr-CH",{maximumFractionDigits:0});
+}
+function fmtPct(v){
+  if(v == null || isNaN(v)) return "n/d";
+  var s = Math.abs(v).toLocaleString("fr-CH",{maximumFractionDigits:1, minimumFractionDigits:1});
+  return (v >= 0 ? "▲ +" : "▼ −") + s + " %";
+}
+function dir(v){ return v == null || isNaN(v) ? "" : (v >= 0 ? "up" : "down"); }
+function capLabel(mcap, cur){
+  if(mcap == null) return null;
+  // Seuils exprimés en USD ; on les convertit grossièrement si la devise est le CHF.
+  var usd = cur === "chf" && fx ? mcap * fx : mcap;
+  if(usd < 50e6) return "micro cap";
+  if(usd < 300e6) return "low cap";
+  if(usd < 2e9) return "small cap";
+  return "capitalisation plus grande";
+}
+function timeStr(ts){
+  var d = new Date(ts);
+  return d.toLocaleTimeString("fr-CH",{hour:"2-digit", minute:"2-digit", second:"2-digit"});
+}
+
+/* ---------- API ---------- */
+function api(path){
+  var ctrl = new AbortController();
+  var to = setTimeout(function(){ ctrl.abort(); }, 15000);
+  return fetch(API + path, {signal:ctrl.signal, headers:{accept:"application/json"}})
+    .then(function(r){
+      clearTimeout(to);
+      if(!r.ok){ var e = new Error("http " + r.status); e.status = r.status; throw e; }
+      return r.json();
+    }, function(e){ clearTimeout(to); throw e; });
+}
+function describeError(e){
+  if(e && e.status === 429) return "CoinGecko limite le nombre de requêtes (erreur 429). Nouvelle tentative automatique, plus espacée.";
+  if(e && e.name === "AbortError") return "CoinGecko ne répond pas (délai dépassé).";
+  if(e && e.status) return "CoinGecko a répondu avec une erreur (" + e.status + ").";
+  return "Impossible de joindre CoinGecko. Vérifie ta connexion.";
+}
+function searchSymbol(sym){
+  return api("/search?query=" + encodeURIComponent(sym)).then(function(j){
+    var s = sym.toLowerCase();
+    return (j.coins || []).filter(function(c){ return c.symbol && c.symbol.toLowerCase() === s; })
+      .sort(function(a,b){
+        var ra = a.market_cap_rank == null ? 1e9 : a.market_cap_rank;
+        var rb = b.market_cap_rank == null ? 1e9 : b.market_cap_rank;
+        return ra - rb;
+      });
+  });
+}
+
+function resolvePending(){
+  var chain = Promise.resolve();
+  state.tokens.forEach(function(t){
+    if(t.id || t.unknown) return;
+    chain = chain.then(function(){
+      return searchSymbol(t.sym).then(function(c){
+        if(c.length){ t.id = c[0].id; t.name = c[0].name; t.auto = true; }
+        else { t.unknown = true; }
+        save();
+      });
+    });
+  });
+  return chain;
+}
+
+function refresh(){
+  if(loading){ rerun = true; return Promise.resolve(); }
+  loading = true;
+  var reqCur = state.cur;
+  setStatus();
+  return resolvePending().then(function(){
+    var ids = state.tokens.filter(function(t){ return t.id; }).map(function(t){ return t.id; });
+    var jobs = [];
+    if(ids.length){
+      jobs.push(api("/coins/markets?vs_currency=" + state.cur + "&ids=" + encodeURIComponent(ids.join(",")) +
+        "&sparkline=true&price_change_percentage=24h,7d&per_page=100").then(function(rows){
+          if(reqCur !== state.cur) return;   // devise changée pendant la requête : on jette ces chiffres
+          var next = {};
+          rows.forEach(function(r){ next[r.id] = r; });
+          data = next;
+        }));
+    }
+    if(state.cur === "chf"){
+      // Taux CHF -> USD pour classer la capitalisation (micro / low / small cap).
+      jobs.push(api("/simple/price?ids=tether&vs_currencies=chf").then(function(j){
+        var rate = j && j.tether && j.tether.chf;
+        if(rate) fx = 1 / rate;
+      }).catch(function(){}));
+    }
+    return Promise.all(jobs);
+  }).then(function(){
+    lastOk = Date.now(); failCount = 0; lastError = null;
+    evaluateAlerts();
+  }).catch(function(e){
+    failCount++; lastError = describeError(e);
+  }).then(function(){
+    loading = false;
+    render();
+    if(rerun){ rerun = false; refresh(); } else { schedule(); }
+  });
+}
+
+function schedule(){
+  clearTimeout(timer);
+  var mult = failCount ? Math.min(Math.pow(2, failCount), 5) : 1;
+  timer = setTimeout(refresh, state.interval * 1000 * mult);
+}
+
+/* ---------- Alertes ---------- */
+function evaluateAlerts(){
+  var newActive = {};
+  var fresh = [];
+  state.tokens.forEach(function(t){
+    var d = t.id ? data[t.id] : null;
+    if(!d) return;
+    var a = t.alerts || mkAlerts();
+    var msgs = [];
+    function check(key, cond, text){
+      var k = t.sym + ":" + key;
+      if(cond){
+        msgs.push(text);
+        if(!firedKeys[k]){ firedKeys[k] = true; fresh.push(t.sym + " : " + text); }
+      } else { delete firedKeys[k]; }
+    }
+    var cur = CUR_SYMBOL[state.cur];
+    if(a.above != null) check("above", d.current_price >= a.above, "prix au-dessus de " + fmtPrice(a.above) + " " + cur);
+    if(a.below != null) check("below", d.current_price <= a.below, "prix sous " + fmtPrice(a.below) + " " + cur);
+    if(a.move != null && d.price_change_percentage_24h != null)
+      check("move", Math.abs(d.price_change_percentage_24h) >= a.move, "variation 24 h au-delà de " + a.move + " %");
+    if(msgs.length) newActive[t.sym] = msgs;
+  });
+  active = newActive;
+  if(fresh.length) notify(fresh);
+}
+function notify(list){
+  try{ if(navigator.vibrate) navigator.vibrate(200); }catch(e){}
+  try{
+    if("Notification" in window && Notification.permission === "granted"){
+      new Notification("Veille crypto", {body: list.join("\n")});
+    }
+  }catch(e){}
+}
+function renderNotifRow(){
+  var row = $("notif-row");
+  row.textContent = "";
+  if(!("Notification" in window)) return;
+  if(Notification.permission === "default"){
+    row.appendChild(h("button", {class:"btn", type:"button", onclick:function(){
+      try{ Notification.requestPermission().then(renderNotifRow); }catch(e){ renderNotifRow(); }
+    }, text:"Activer les notifications"}));
+  } else if(Notification.permission === "denied"){
+    row.textContent = "Notifications refusées par le navigateur : les alertes s'affichent seulement dans la page.";
+  }
+}
+
+/* ---------- Rendu ---------- */
+function setStatus(){
+  var el = $("status");
+  if(loading) el.textContent = lastOk ? "Actualisation… (dernières données à " + timeStr(lastOk) + ")" : "Chargement…";
+  else if(lastOk) el.textContent = "Données de " + timeStr(lastOk) + " · actualisation toutes les " + state.interval + " s";
+  else el.textContent = "Aucune donnée pour l'instant";
+}
+
+function sparkline(prices, cls){
+  var svgNS = "http://www.w3.org/2000/svg";
+  var svg = document.createElementNS(svgNS, "svg");
+  svg.setAttribute("viewBox", "0 0 100 34");
+  svg.setAttribute("preserveAspectRatio", "none");
+  svg.setAttribute("class", "spark " + cls);
+  svg.setAttribute("role", "img");
+  svg.setAttribute("aria-label", "Cours sur 7 jours");
+  if(!prices || prices.length < 2) return svg;
+  var min = Math.min.apply(null, prices), max = Math.max.apply(null, prices);
+  var span = max - min || 1;
+  var pts = prices.map(function(p, i){
+    var x = (i / (prices.length - 1)) * 100;
+    var y = 31 - ((p - min) / span) * 28;
+    return x.toFixed(2) + "," + y.toFixed(2);
+  });
+  var area = document.createElementNS(svgNS, "polygon");
+  area.setAttribute("points", "0,34 " + pts.join(" ") + " 100,34");
+  area.setAttribute("fill", "currentColor");
+  area.setAttribute("opacity", "0.12");
+  var line = document.createElementNS(svgNS, "polyline");
+  line.setAttribute("points", pts.join(" "));
+  line.setAttribute("fill", "none");
+  line.setAttribute("stroke", "currentColor");
+  line.setAttribute("stroke-width", "1.6");
+  line.setAttribute("vector-effect", "non-scaling-stroke");
+  svg.appendChild(area);
+  svg.appendChild(line);
+  return svg;
+}
+
+function numOrNull(v){
+  v = String(v).replace(",", ".").trim();
+  if(v === "") return null;
+  var n = parseFloat(v);
+  return isNaN(n) || n <= 0 ? null : n;
+}
+
+function alertField(t, key, label, value){
+  var id = "al-" + t.sym + "-" + key;
+  var input = h("input", {id:id, type:"text", inputmode:"decimal", placeholder:"—", value: value == null ? "" : String(value)});
+  input.addEventListener("change", function(){
+    if(!t.alerts) t.alerts = mkAlerts();
+    t.alerts[key] = numOrNull(input.value);
+    delete firedKeys[t.sym + ":" + key];
+    save(); evaluateAlerts(); render();
+  });
+  return h("label", {for:id}, [label, input]);
+}
+
+function card(t){
+  var d = t.id ? data[t.id] : null;
+  var hits = active[t.sym];
+  var cur = CUR_SYMBOL[state.cur];
+  var chips = [];
+  if(d){
+    var cl = capLabel(d.market_cap, state.cur);
+    if(cl) chips.push(h("span", {class:"chip", text:cl}));
+    if(d.market_cap_rank) chips.push(h("span", {class:"chip", text:"rang #" + d.market_cap_rank}));
+    if(d.market_cap && d.total_volume != null && d.total_volume / d.market_cap < 0.02)
+      chips.push(h("span", {class:"chip warn", text:"peu d'échanges"}));
+  }
+  if(t.auto) chips.push(h("span", {class:"chip warn", text:"jeton à vérifier"}));
+  if(t.unknown) chips.push(h("span", {class:"chip warn", text:"introuvable"}));
+
+  var right;
+  if(d){
+    right = h("div", {}, [
+      h("div", {class:"price", text: fmtPrice(d.current_price) + " " + cur}),
+      h("div", {class:"chg " + dir(d.price_change_percentage_24h), style:"text-align:right", text: fmtPct(d.price_change_percentage_24h) + " · 24 h"})
+    ]);
+  } else {
+    right = h("div", {class:"price", text: t.unknown ? "—" : (loading ? "…" : "n/d")});
+  }
+
+  var parts = [
+    h("div", {class:"row1"}, [
+      h("div", {class:"name"}, [
+        h("div", {class:"sym", text:t.sym}),
+        h("div", {class:"full", text: d ? d.name : (t.name || "")}),
+        h("div", {class:"chips"}, chips)
+      ]),
+      right
+    ])
+  ];
+
+  if(d){
+    var p7 = d.price_change_percentage_7d_in_currency;
+    parts.push(sparkline(d.sparkline_in_7d && d.sparkline_in_7d.price, dir(p7)));
+    parts.push(h("div", {class:"stats"}, [
+      h("div", {class:"stat"}, [h("b", {class:dir(p7), text:fmtPct(p7)}), h("span", {text:"7 jours"})]),
+      h("div", {class:"stat"}, [h("b", {text:fmtBig(d.market_cap) + " " + cur}), h("span", {text:"capitalisation"})]),
+      h("div", {class:"stat"}, [h("b", {text:fmtBig(d.total_volume) + " " + cur}), h("span", {text:"volume 24 h"})])
+    ]));
+  }
+
+  if(hits){
+    parts.push(h("div", {class:"banner alert"}, hits.map(function(m){ return h("div", {text:"Alerte : " + m}); })));
+  }
+
+  var a = t.alerts || mkAlerts();
+  var det = h("details", {}, [
+    h("summary", {text:"Alertes et gestion"}),
+    h("div", {class:"alerts"}, [
+      alertField(t, "above", "Prix au-dessus de (" + cur + ")", a.above),
+      alertField(t, "below", "Prix sous (" + cur + ")", a.below),
+      alertField(t, "move", "Variation 24 h au-delà de (%)", a.move)
+    ]),
+    h("button", {type:"button", class:"remove", onclick:function(){
+      state.tokens = state.tokens.filter(function(x){ return x !== t; });
+      save(); evaluateAlerts(); render();
+    }, text:"Retirer " + t.sym})
+  ]);
+  if(openIds[t.sym]) det.open = true;
+  det.addEventListener("toggle", function(){ openIds[t.sym] = det.open; });
+  parts.push(det);
+
+  return h("li", {class:"card" + (hits ? " hit" : "")}, parts);
+}
+
+function render(){
+  setStatus();
+  $("cur-chf").setAttribute("aria-pressed", String(state.cur === "chf"));
+  $("cur-usd").setAttribute("aria-pressed", String(state.cur === "usd"));
+
+  var banners = $("banners");
+  banners.textContent = "";
+  if(lastError){
+    banners.appendChild(h("div", {class:"banner err", text:lastError + (lastOk ? " Les chiffres affichés datent de " + timeStr(lastOk) + "." : "")}));
+  }
+
+  // Ne pas écraser un champ en cours de saisie.
+  var ae = document.activeElement;
+  var list = $("list");
+  if(ae && list.contains(ae) && ae.tagName === "INPUT") return;
+
+  list.textContent = "";
+  if(!state.tokens.length){
+    list.appendChild(h("li", {class:"empty", text:"Aucun jeton suivi. Ajoute un symbole ci-dessous."}));
+  } else {
+    state.tokens.forEach(function(t){ list.appendChild(card(t)); });
+  }
+  renderNotifRow();
+}
+
+/* ---------- Ajout de jetons ---------- */
+function renderCands(items){
+  var ul = $("cands");
+  ul.textContent = "";
+  items.forEach(function(c){
+    var label = c.name + " (" + c.symbol.toUpperCase() + ")" + (c.market_cap_rank ? " · rang #" + c.market_cap_rank : " · sans rang");
+    ul.appendChild(h("li", {}, [h("button", {type:"button", onclick:function(){
+      if(!state.tokens.some(function(t){ return t.id === c.id; })){
+        state.tokens.push({sym:c.symbol.toUpperCase(), id:c.id, name:c.name, alerts:mkAlerts()});
+        save();
+      }
+      ul.textContent = "";
+      $("add-sym").value = "";
+      refresh();
+    }, text:label})]));
+  });
+}
+
+$("add-form").addEventListener("submit", function(ev){
+  ev.preventDefault();
+  var sym = $("add-sym").value.trim();
+  var note = $("add-note");
+  if(!sym) return;
+  note.textContent = "Recherche…";
+  searchSymbol(sym).then(function(c){
+    if(!c.length){ note.textContent = "Aucun jeton trouvé pour « " + sym + " »."; renderCands([]); return; }
+    note.textContent = "Choisis le bon jeton. Plusieurs projets peuvent partager un symbole, et des copies frauduleuses existent : compare le nom et le rang.";
+    renderCands(c.slice(0, 6));
+  }).catch(function(e){ note.textContent = describeError(e); });
+});
+
+/* ---------- Contrôles ---------- */
+function setCur(c){
+  if(state.cur === c) return;
+  state.cur = c;
+  // Les seuils de prix sont exprimés dans la devise choisie : on les efface pour éviter les erreurs.
+  state.tokens.forEach(function(t){
+    if(t.alerts){ t.alerts.above = null; t.alerts.below = null; }
+  });
+  firedKeys = {}; active = {}; data = {};
+  save(); render(); refresh();
+}
+$("cur-chf").addEventListener("click", function(){ setCur("chf"); });
+$("cur-usd").addEventListener("click", function(){ setCur("usd"); });
+$("refresh").addEventListener("click", function(){ clearTimeout(timer); refresh(); });
+document.addEventListener("visibilitychange", function(){
+  if(!document.hidden && (!lastOk || Date.now() - lastOk > state.interval * 1000)){ clearTimeout(timer); refresh(); }
+});
+
+render();
+refresh();
+})();
+</script>
+</body>
+</html>

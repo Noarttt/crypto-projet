@@ -1,0 +1,14 @@
+{
+  "name": "Veille crypto",
+  "short_name": "Veille crypto",
+  "description": "Suivi de cours et alertes de seuil pour quelques cryptomonnaies.",
+  "start_url": "./",
+  "scope": "./",
+  "display": "standalone",
+  "background_color": "#0e151c",
+  "theme_color": "#0e151c",
+  "lang": "fr",
+  "icons": [
+    {"src": "icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any"}
+  ]
+}
