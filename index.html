@@ -608,7 +608,31 @@ function dateStr(ts){
 }
 
 /* ---------- API ---------- */
+/* CoinGecko (offre gratuite) limite fortement les requêtes, et ses refus 429 n'ont pas d'en-tête CORS : le navigateur les
+   montre comme « impossible de joindre ». Toutes les requêtes passent donc par une file : une toutes les 2,5 s, avec une
+   pause de 15 s puis un seul nouvel essai quand CoinGecko refuse. */
+var CGQ = {next:0, chain:Promise.resolve()};
 function api(path){
+  function once(){
+    var wait = Math.max(0, CGQ.next - Date.now());
+    return new Promise(function(res){ setTimeout(res, wait); }).then(function(){
+      CGQ.next = Date.now() + 2500;
+      return rawApi(path);
+    });
+  }
+  function run(){
+    return once().catch(function(e){
+      if(e && e.name === "AbortError") throw e;
+      if(e && e.status && e.status !== 429) throw e;
+      CGQ.next = Date.now() + 15000;
+      return once();
+    });
+  }
+  var p = CGQ.chain.then(run, run);
+  CGQ.chain = p.catch(function(){});
+  return p;
+}
+function rawApi(path){
   var ctrl = new AbortController();
   var to = setTimeout(function(){ ctrl.abort(); }, 15000);
   return fetch(API + path, {signal:ctrl.signal, headers:{accept:"application/json"}})
@@ -621,6 +645,7 @@ function api(path){
 function describeError(e){
   var who = (e && e.who) || "CoinGecko";
   if(e && e.status === 429) return who + " limite le nombre de requêtes (erreur 429). Nouvelle tentative automatique, plus espacée.";
+  if(e && !e.status && e.name !== "AbortError" && who === "CoinGecko") return "CoinGecko ne répond pas : le plus souvent une limite de requêtes (le navigateur ne montre pas le détail). Réessaie dans une minute.";
   if(e && e.name === "AbortError") return who + " ne répond pas (délai dépassé).";
   if(e && e.status) return who + " a répondu avec une erreur (" + e.status + ").";
   return "Impossible de joindre " + who + ". Vérifie ta connexion.";
