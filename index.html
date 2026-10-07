@@ -614,7 +614,7 @@ var RANGES = [
   {k:"1a",   label:"1 an",  days:365},
   {k:"max",  label:"Tout",  days:"max"}
 ];
-var chartSel = {};      // jeton -> clé de période (défaut "7j", non conservé)
+// période choisie : t.range sur chaque jeton (conservée dans le stockage local, défaut "7j")
 var chartCache = {};    // id|période -> {t, prices, err}
 function rangeOf(k){ for(var i = 0; i < RANGES.length; i++) if(RANGES[i].k === k) return RANGES[i]; return RANGES[2]; }
 function downsample(a, n){
@@ -643,7 +643,8 @@ function loadChart(id, rg){
     });
 }
 function chartBlock(t, d){
-  var k = chartSel[t.sym] || "7j";
+  var k = t.range || "7j";
+  if(rangeOf(k).k !== k) k = "7j";
   var rg = rangeOf(k);
   var prices, note = "", stat = null;
   if(k === "7j"){
@@ -659,7 +660,7 @@ function chartBlock(t, d){
   if(prices && prices.length > 1 && prices[0] > 0) chg = (prices[prices.length - 1] / prices[0] - 1) * 100;
   var btns = RANGES.map(function(r){
     return h("button", {type:"button", class:"btn small" + (r.k === k ? " sel" : ""), "aria-pressed":String(r.k === k),
-      onclick:function(){ chartSel[t.sym] = r.k; render(); }, text:r.label});
+      onclick:function(){ t.range = r.k; save(); render(); }, text:r.label});
   });
   var kids = [h("div", {class:"ranges"}, btns), sparkline(prices, dir(chg), rg.label)];
   if(chg != null) kids.push(h("div", {class:"note"}, ["Variation sur " + rg.label + " : ", h("b", {class:dir(chg), text:fmtPct(chg)})]));
