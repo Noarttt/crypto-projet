@@ -135,6 +135,8 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .brlist{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
 .brlist li{border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; justify-content:space-between; gap:10px; font-size:.88rem; align-items:center}
 .brlist li button{border:0; background:none; cursor:pointer; text-align:left; padding:0; color:inherit; font:inherit; width:100%; display:flex; justify-content:space-between; gap:10px}
+.brlist .tick{color:var(--up); font-weight:800; font-size:1.1em}
+.brlist li:has(.tick){border-color:var(--up); box-shadow:inset 0 0 0 1px var(--up)}
 .brlist .mono{font-family:var(--mono); white-space:nowrap}
 .note{font-size:.8rem; color:var(--muted); margin:0}
 .empty{background:var(--surface); border:1px dashed var(--line); border-radius:10px; padding:18px; color:var(--muted); text-align:center}
@@ -2270,7 +2272,7 @@ function renderBridge(){
     kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (touche une ligne pour le choisir)"}));
     kids.push(h("ul", {class:"brlist"}, pk.list.map(function(x){
       return h("li", {}, [h("button", {type:"button", "aria-pressed":String(x === b), onclick:function(){ choosePick(x.b.k); }}, [
-        h("span", {text:(x === b ? "✓ " : "") + x.b.name + (x === pk.best ? " (recommandé)" : "") + (x.live ? " · en direct" : " · estimation")}),
+        h("span", {}, [x === b ? h("span", {class:"tick", "aria-label":"sélectionné", text:"✓ "}) : null, document.createTextNode(x.b.name + (x === pk.best ? " (recommandé)" : "") + (x.live ? " · en direct" : " · estimation"))]),
         h("span", {class:"mono", text:fmtMoney(x.cost) + " $ · " + x.pct.toFixed(2) + " % · " + fmtDuration(x.time)})
       ])]);
     })));
