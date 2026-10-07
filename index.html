@@ -190,11 +190,13 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   </div>
   <div class="view" id="view-bridge" hidden></div>
   <div class="view" id="view-wallet" hidden></div>
+  <div class="view" id="view-pump" hidden></div>
 </main>
 <nav class="tabs" aria-label="Navigation">
   <button type="button" id="tab-track" class="sel" aria-pressed="true">Suivi</button>
   <button type="button" id="tab-bridge" aria-pressed="false">Bridge</button>
   <button type="button" id="tab-wallet" aria-pressed="false">Wallet</button>
+  <button type="button" id="tab-pump" aria-pressed="false">Pump</button>
 </nav>
 <script>
 (function(){
@@ -2088,11 +2090,14 @@ function showTab(name){
   $("view-track").hidden = name !== "track";
   $("view-bridge").hidden = name !== "bridge";
   $("view-wallet").hidden = name !== "wallet";
-  ["track", "bridge", "wallet"].forEach(function(n){
+  $("view-pump").hidden = name !== "pump";
+  ["track", "bridge", "wallet", "pump"].forEach(function(n){
     var b = $("tab-" + n);
     b.classList.toggle("sel", n === name);
     b.setAttribute("aria-pressed", String(n === name));
   });
+  if(name !== "pump" && typeof pumpDisconnect === "function") pumpDisconnect();
+  if(name === "pump") pumpEnter();
   if(name === "bridge") renderBridge();
   if(name === "wallet"){ renderWallet(); }
   window.scrollTo(0, 0);
@@ -2100,6 +2105,11 @@ function showTab(name){
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
 $("tab-bridge").addEventListener("click", function(){ showTab("bridge"); });
 $("tab-wallet").addEventListener("click", function(){ showTab("wallet"); });
+$("tab-pump").addEventListener("click", function(){ showTab("pump"); });
+document.addEventListener("visibilitychange", function(){
+  if(currentTab !== "pump") return;
+  if(document.hidden) pumpDisconnect(); else pumpEnter();
+});
 
 /* ---------- Devis en direct (actualisés en continu tant que l'onglet Bridge est ouvert) ----------
    Across : son API publique, toutes les 10 s. Autres ponts : l'API de devis de LI.FI, un pont à la fois (le plus
@@ -2734,6 +2744,229 @@ function transferForm(ch, chains, lockFrom){
     info, h("div", {class:"acts"}, [go, mx]), msg];
 }
 
+/* ---------- Pump.fun : nouveaux lancements en direct via Helius (clé personnelle, gardée dans ce navigateur) ----------
+   Un WebSocket Helius écoute les journaux des transactions qui utilisent l'autorité de création (mint authority) de Pump.fun :
+   seules les créations de jetons passent par là (pas les achats et ventes), ce qui économise les crédits. Le nom, le symbole,
+   l'adresse du jeton et celle de sa courbe sont lus dans l'évènement de création. Prix, capitalisation et avancement de la
+   courbe viennent d'une lecture groupée des comptes de courbe (une seule requête). */
+var PUMP_MINT_AUTH = "TSLvdd1pWpHVjahSpsvCXUbgwsL3JAcvokwaKt1eokM";
+var PUMP_CREATE_DISC = [27, 114, 169, 77, 222, 235, 99, 118];
+var PUMP_REAL_TOKENS = 793100000000000;   // 793,1 M de jetons (6 décimales) vendables sur la courbe
+var PUMP_KEY_LS = "veille-crypto.helius";
+var PUMP = {key:"", ws:null, status:"idle", msg:"", items:[], seen:{}, retry:0, timer:null, poll:null, tick:null, lastCreate:0, since:0, active:false, follow:{}};
+try{ PUMP.key = localStorage.getItem(PUMP_KEY_LS) || ""; }catch(e){}
+var B58 = "123456789ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz";
+function b58enc(bytes){
+  var digits = [0];
+  for(var i = 0; i < bytes.length; i++){
+    var carry = bytes[i];
+    for(var j = 0; j < digits.length; j++){ carry += digits[j] << 8; digits[j] = carry % 58; carry = (carry / 58) | 0; }
+    while(carry){ digits.push(carry % 58); carry = (carry / 58) | 0; }
+  }
+  var out = "";
+  for(var k = 0; k < bytes.length && bytes[k] === 0; k++) out += "1";
+  for(var q = digits.length - 1; q >= 0; q--) out += B58[digits[q]];
+  return out;
+}
+function b64bytes(b64){
+  var bin = atob(b64), a = new Uint8Array(bin.length);
+  for(var i = 0; i < bin.length; i++) a[i] = bin.charCodeAt(i);
+  return a;
+}
+function u64le(a, o){
+  var v = BigInt(0);
+  for(var i = 7; i >= 0; i--) v = (v << BigInt(8)) | BigInt(a[o + i]);
+  return v;
+}
+/* Évènement de création Pump.fun : discriminant (8 octets), puis nom, symbole, uri (chaînes préfixées par leur longueur sur 4 octets), puis jeton, courbe, créateur (32 octets chacun) */
+function parseCreateEvent(b64){
+  var a;
+  try{ a = b64bytes(b64); }catch(e){ return null; }
+  if(a.length < 8 + 12 + 96) return null;
+  for(var i = 0; i < 8; i++) if(a[i] !== PUMP_CREATE_DISC[i]) return null;
+  var o = 8, dec = new TextDecoder("utf-8", {fatal:false});
+  function str(){
+    if(o + 4 > a.length) throw new Error("eof");
+    var n = a[o] | (a[o + 1] << 8) | (a[o + 2] << 16) | (a[o + 3] << 24);
+    o += 4;
+    if(n < 0 || n > 400 || o + n > a.length) throw new Error("len");
+    var s = dec.decode(a.slice(o, o + n)); o += n; return s;
+  }
+  function key(){
+    if(o + 32 > a.length) throw new Error("eof");
+    var k = b58enc(a.slice(o, o + 32)); o += 32; return k;
+  }
+  try{
+    var name = str(), symbol = str(), uri = str();
+    return {name:name, symbol:symbol, uri:uri, mint:key(), curve:key(), user:key()};
+  }catch(e){ return null; }
+}
+/* Compte de courbe : discriminant (8 octets), puis réserves virtuelles de jetons et de SOL, réserves réelles de jetons et de SOL, offre totale (u64), puis « terminée » (1 octet) */
+function parseCurve(b64, solUsd){
+  var a;
+  try{ a = b64bytes(b64); }catch(e){ return null; }
+  if(a.length < 8 + 41) return null;
+  var vTok = u64le(a, 8), vSol = u64le(a, 16), rTok = u64le(a, 24), supply = u64le(a, 40), complete = a[48] === 1;
+  if(vTok === BigInt(0)) return null;
+  var priceSol = (Number(vSol) / 1e9) / (Number(vTok) / 1e6);
+  var prog = Math.max(0, Math.min(100, 100 - Number(rTok) * 100 / PUMP_REAL_TOKENS));
+  var mcapSol = priceSol * Number(supply) / 1e6;
+  return {priceSol:priceSol, priceUsd:priceSol * solUsd, mcapUsd:mcapSol * solUsd, progress:complete ? 100 : prog, complete:complete};
+}
+function pumpUrl(path){ return "https://mainnet.helius-rpc.com/?api-key=" + encodeURIComponent(PUMP.key); }
+function pumpSetStatus(st, msg){ PUMP.status = st; PUMP.msg = msg || ""; if(currentTab === "pump") renderPump(); }
+function pumpConnect(){
+  if(!PUMP.key || PUMP.ws || !PUMP.active) return;
+  clearTimeout(PUMP.timer);
+  pumpSetStatus("connecting", "Connexion à Helius…");
+  nativePx().catch(function(){});
+  var ws;
+  try{ ws = new WebSocket("wss://mainnet.helius-rpc.com/?api-key=" + encodeURIComponent(PUMP.key)); }
+  catch(e){ pumpSetStatus("error", "Connexion impossible : " + (e && e.message ? e.message : "erreur")); return; }
+  PUMP.ws = ws;
+  ws.onopen = function(){
+    ws.send(JSON.stringify({jsonrpc:"2.0", id:1, method:"logsSubscribe", params:[{mentions:[PUMP_MINT_AUTH]}, {commitment:"confirmed"}]}));
+  };
+  ws.onmessage = function(ev){
+    var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+    if(m.id === 1){
+      if(m.error){ pumpSetStatus("error", "Helius a refusé l'abonnement : " + (m.error.message || "erreur") + ". Vérifie ta clé."); return; }
+      PUMP.retry = 0; PUMP.since = Date.now(); pumpSetStatus("live", "Connecté : en attente des nouveaux lancements…"); return;
+    }
+    if(m.method !== "logsNotification") return;
+    var v = m.params && m.params.result && m.params.result.value;
+    if(!v || v.err || !Array.isArray(v.logs)) return;
+    for(var i = 0; i < v.logs.length; i++){
+      var L = v.logs[i];
+      if(typeof L !== "string" || L.indexOf("Program data: ") !== 0) continue;
+      var ev2 = parseCreateEvent(L.slice(14));
+      if(ev2 && !PUMP.seen[ev2.mint]){
+        PUMP.seen[ev2.mint] = 1; ev2.t = Date.now(); ev2.sig = v.signature;
+        PUMP.items.unshift(ev2); PUMP.items = PUMP.items.slice(0, 40);
+        PUMP.lastCreate = ev2.t;
+        pumpSchedule();
+        break;
+      }
+    }
+  };
+  ws.onerror = function(){ PUMP.lastErr = true; };
+  ws.onclose = function(ev){
+    PUMP.ws = null;
+    if(!PUMP.active) return;
+    var wait = Math.min(30000, 2000 * Math.pow(2, PUMP.retry++));
+    var why = (ev && (ev.code === 1008 || ev.code === 4001 || ev.code === 4003)) ? "clé refusée par Helius" : "connexion perdue";
+    pumpSetStatus("error", "Helius : " + why + ". Nouvelle tentative dans " + Math.round(wait / 1000) + " s.");
+    PUMP.timer = setTimeout(pumpConnect, wait);
+  };
+}
+var pumpRenderT = null;
+function pumpSchedule(){
+  if(pumpRenderT) return;
+  pumpRenderT = setTimeout(function(){ pumpRenderT = null; if(currentTab === "pump"){ pumpPoll(); renderPump(); } }, 700);
+}
+function pumpDisconnect(){
+  PUMP.active = false;
+  clearTimeout(PUMP.timer); clearInterval(PUMP.poll); clearInterval(PUMP.tick); PUMP.poll = PUMP.tick = null;
+  if(PUMP.ws){ var w = PUMP.ws; PUMP.ws = null; try{ w.onclose = null; w.close(); }catch(e){} }
+  if(PUMP.status === "live" || PUMP.status === "connecting") PUMP.status = "idle";
+}
+function pumpPoll(){
+  if(!PUMP.key || !PUMP.items.length || PUMP.polling) return;
+  var list = PUMP.items.slice(0, 40);
+  PUMP.polling = true;
+  var solUsd = natPriceOf("solana");
+  rpcCall(pumpUrl(), "getMultipleAccounts", [list.map(function(x){ return x.curve; }), {encoding:"base64", commitment:"confirmed"}]).then(function(r){
+    var vals = (r && r.value) || [];
+    list.forEach(function(x, i){
+      var acc = vals[i];
+      if(!acc || !acc.data){ x.closed = true; return; }
+      var c = parseCurve(acc.data[0], solUsd);
+      if(c){ x.cur = c; x.closed = false; }
+    });
+    PUMP.lastPoll = Date.now(); PUMP.pollErr = "";
+  }).catch(function(e){ PUMP.pollErr = "Lecture des prix impossible (" + (e && e.message ? e.message : "erreur") + ")."; })
+    .then(function(){ PUMP.polling = false; if(currentTab === "pump") renderPump(); });
+}
+function pumpEnter(){
+  PUMP.active = true;
+  if(PUMP.key){
+    pumpConnect();
+    if(!PUMP.poll) PUMP.poll = setInterval(function(){ if(!document.hidden) pumpPoll(); }, 10000);
+    if(!PUMP.tick) PUMP.tick = setInterval(function(){ if(currentTab === "pump" && !document.hidden){ var ae = document.activeElement; if(!(ae && ae.tagName === "INPUT")) renderPump(); } }, 5000);
+  }
+  renderPump();
+}
+function ageStr(ms){
+  var s = Math.max(0, Math.round(ms / 1000));
+  return s < 60 ? s + " s" : s < 3600 ? Math.floor(s / 60) + " min" : Math.floor(s / 3600) + " h";
+}
+function pumpFollow(x){
+  PUMP.follow[x.mint] = "Recherche sur DexScreener…"; renderPump();
+  dexApi("/tokens/" + encodeURIComponent(x.mint)).then(function(j){
+    var pairs = (j.pairs || []).filter(function(p){ return p.chainId === "solana" && p.priceUsd && p.baseToken && p.baseToken.address === x.mint; })
+      .sort(function(a, b){ return ((b.liquidity && b.liquidity.usd) || 0) - ((a.liquidity && a.liquidity.usd) || 0); });
+    if(!pairs.length){ PUMP.follow[x.mint] = "Pas encore de paire sur DexScreener : réessaie dans quelques minutes."; return; }
+    var p = pairs[0], id = dexIdOf(p.chainId, p.pairAddress);
+    if(!state.tokens.some(function(t){ return t.id === id; })){
+      state.tokens.push({sym:p.baseToken.symbol.toUpperCase(), id:id, name:p.baseToken.name, alerts:mkAlerts(), dex:{chain:p.chainId, pair:p.pairAddress, addr:p.baseToken.address}});
+      save(); refresh();
+    }
+    PUMP.follow[x.mint] = "Ajouté à ton suivi (onglet Suivi).";
+  }).catch(function(e){ PUMP.follow[x.mint] = describeError(e); }).then(function(){ renderPump(); });
+}
+function renderPump(){
+  var root = $("view-pump");
+  var ae = document.activeElement;
+  if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
+  root.textContent = "";
+  var keyIn = h("input", {id:"pump-key", type:"password", placeholder:"Clé API Helius", value:PUMP.key, autocomplete:"off", autocapitalize:"none", autocorrect:"off", spellcheck:"false"});
+  var form = h("form", {class:"add", style:"padding:0; border:0; background:none"}, [keyIn, h("button", {class:"btn primary", type:"submit", text: PUMP.key ? "Remplacer la clé" : "Enregistrer la clé"})]);
+  form.style.flexDirection = "column";
+  form.addEventListener("submit", function(ev){
+    ev.preventDefault();
+    var k = keyIn.value.trim();
+    if(!/^[A-Za-z0-9-]{16,64}$/.test(k)){ pumpSetStatus("error", "Clé invalide : colle la clé Helius telle quelle (lettres, chiffres et tirets)."); return; }
+    pumpDisconnect();
+    PUMP.key = k; PUMP.retry = 0; PUMP.items = []; PUMP.seen = {};
+    try{ localStorage.setItem(PUMP_KEY_LS, k); }catch(e){}
+    pumpEnter();
+  });
+  var kids = [h("h2", {style:"margin:0; font-size:1.05rem", text:"Pump.fun : nouveaux lancements"}),
+    h("p", {class:"note", text:"Clé Helius (offre gratuite : 1 million de crédits par mois). Elle reste dans ce navigateur et n'est envoyée qu'à Helius. La connexion n'est ouverte que lorsque cet onglet est affiché, pour économiser tes crédits."}), form];
+  if(PUMP.key) kids.push(h("button", {type:"button", class:"remove", onclick:function(){
+    pumpDisconnect(); PUMP.key = ""; PUMP.items = []; PUMP.seen = {}; PUMP.status = "idle"; PUMP.msg = "";
+    try{ localStorage.removeItem(PUMP_KEY_LS); }catch(e){}
+    renderPump();
+  }, text:"Supprimer la clé"}));
+  if(PUMP.msg) kids.push(h("p", {class:"banner " + (PUMP.status === "error" ? "err" : "ok"), text:PUMP.msg}));
+  if(PUMP.pollErr) kids.push(h("p", {class:"note", text:PUMP.pollErr}));
+  if(PUMP.status === "live" && !PUMP.items.length && Date.now() - PUMP.since > 60000)
+    kids.push(h("p", {class:"note", text:"Aucun lancement reçu depuis plus d'une minute : l'adresse surveillée est peut-être obsolète, ou Helius n'envoie pas ces journaux avec ton offre. Dis-le-moi."}));
+  root.appendChild(h("section", {class:"panel"}, kids));
+
+  if(!PUMP.key){ root.appendChild(h("p", {class:"note", text:"Crée une clé gratuite sur helius.dev, colle-la ci-dessus : les nouveaux jetons apparaîtront ici en direct."})); return; }
+  var now = Date.now();
+  var rows = PUMP.items.map(function(x){
+    var c = x.cur;
+    var info = c ? ("cap. ≈ " + fmtMoney(c.mcapUsd) + " $ · courbe " + c.progress.toFixed(0) + " %" + (c.complete ? " (terminée)" : "")) : (x.closed ? "courbe fermée (migré ou terminé)" : "prix en cours de lecture…");
+    var fmsg = PUMP.follow[x.mint];
+    return h("div", {class:"wgroup"}, [
+      h("div", {class:"whead"}, [h("b", {text:(x.symbol || "?") + " · " + (x.name || "")}), h("span", {class:"note", text:"il y a " + ageStr(now - x.t)})]),
+      h("div", {class:"note", text:info + (c ? " · " + (c.priceUsd < 0.01 ? c.priceUsd.toExponential(2) : c.priceUsd.toFixed(4)) + " $" : "")}),
+      h("div", {class:"note mono", text:"contrat " + shortAddr(x.mint)}),
+      h("div", {class:"acts"}, [
+        h("button", {type:"button", class:"btn small", onclick:function(){ pumpFollow(x); }, text:"Suivre"}),
+        h("a", {class:"btn small", href:"https://pump.fun/coin/" + x.mint, target:"_blank", rel:"noopener noreferrer", text:"Pump.fun ↗"}),
+        h("a", {class:"btn small", href:"https://dexscreener.com/solana/" + x.mint, target:"_blank", rel:"noopener noreferrer", text:"DexScreener ↗"})
+      ]),
+      fmsg ? h("p", {class:"note", text:fmsg}) : null
+    ]);
+  });
+  root.appendChild(h("section", {class:"panel"}, [h("h3", {style:"margin:0; font-size:.95rem", text:"Derniers lancements (" + PUMP.items.length + ")"})].concat(
+    rows.length ? rows : [h("p", {class:"note", text: PUMP.status === "live" ? "En attente du prochain lancement…" : "Pas encore de données."})])));
+  root.appendChild(h("p", {class:"note", text:"Données brutes de la blockchain : la plupart de ces jetons n'ont aucune valeur durable et beaucoup sont des arnaques ou ne peuvent pas être revendus. Rien ici n'est un conseil. Le suivi (« Suivre ») n'est possible qu'une fois le jeton listé sur DexScreener."}));
+}
+
 render();
 refresh();
 // après un rechargement de la page, on reste dans l'onglet où on était
@@ -2741,9 +2974,9 @@ refresh();
   var saved = null;
   try{ saved = JSON.parse(localStorage.getItem(TAB_KEY) || "null"); }catch(e){}
   var h0 = (location.hash || "").replace("#", "");
-  var name = ["track", "bridge", "wallet"].indexOf(h0) >= 0 ? h0 : (saved && saved.tab);
+  var name = ["track", "bridge", "wallet", "pump"].indexOf(h0) >= 0 ? h0 : (saved && saved.tab);
   if(saved && saved.sub) WAL.sub = saved.sub;
-  if(name === "bridge" || name === "wallet") showTab(name);
+  if(name === "bridge" || name === "wallet" || name === "pump") showTab(name);
 })();
 })();
 </script>
