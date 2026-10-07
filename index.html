@@ -114,10 +114,6 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   <div class="top">
     <h1>Veille crypto</h1>
     <div class="tools">
-      <div class="seg" role="group" aria-label="Devise">
-        <button type="button" id="cur-chf" aria-pressed="true">CHF</button>
-        <button type="button" id="cur-usd" aria-pressed="false">USD</button>
-      </div>
       <button type="button" class="btn" id="refresh">Actualiser</button>
     </div>
   </div>
@@ -206,10 +202,10 @@ function paperValue(p, priceOf){
 /* PAPER-CORE-END */
 
 var DEFAULT = {
-  cur: "chf",
+  cur: "usd",
   interval: 60,
   exchange: "none",
-  paper: newPaper("chf", 300),
+  paper: newPaper("usd", 300),
   tokens: [
     {sym:"MAGIC", id:"magic", alerts:mkAlerts()},
     {sym:"NIL",   id:"nillion", alerts:mkAlerts()},
@@ -238,9 +234,16 @@ function load(){
     }
   }catch(e){ s = null; }
   if(!s) s = JSON.parse(JSON.stringify(DEFAULT));
-  if(!s.paper || typeof s.paper.cash !== "number" || !s.paper.pos) s.paper = newPaper(s.cur, 300);
+  if(!s.paper || typeof s.paper.cash !== "number" || !s.paper.pos) s.paper = newPaper("usd", 300);
   if(!Array.isArray(s.paper.log)) s.paper.log = [];
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
+  // Tout est désormais en dollars. Les anciens réglages en CHF (simulation, seuils de prix) sont remis à zéro.
+  if(s.cur !== "usd" || s.paper.cur !== "usd"){
+    s.cur = "usd";
+    s.paper = newPaper("usd", 300);
+    s.tokens.forEach(function(t){ if(t.alerts){ t.alerts.above = null; t.alerts.below = null; } });
+    s.migratedFromChf = true;
+  }
   return s;
 }
 function save(){
@@ -249,7 +252,6 @@ function save(){
 
 var state = load();
 var data = {};
-var fx = null;            // facteur CHF -> USD, pour classer la capitalisation
 var lastOk = null;
 var failCount = 0;
 var lastError = null;
@@ -263,6 +265,11 @@ var tradeUI = null;       // {id, side, amount, fraction}
 var flash = null;         // {text, t, kind}
 var resetAsk = false;
 var simStartDraft = null; // capital de départ en cours de saisie
+if(state.migratedFromChf){
+  delete state.migratedFromChf;
+  save();
+  flash = {text:"Tout est maintenant en dollars. La simulation a été remise à 300 $ et les seuils de prix en francs ont été effacés.", t:Date.now(), kind:"ok"};
+}
 
 var $ = function(id){ return document.getElementById(id); };
 
@@ -317,11 +324,10 @@ function fmtPct(v){
 function dir(v){ return v == null || isNaN(v) ? "" : (v >= 0 ? "up" : "down"); }
 function capLabel(mcap, cur){
   if(mcap == null) return null;
-  // Seuils exprimés en USD ; on les convertit grossièrement si la devise est le CHF.
-  var usd = cur === "chf" && fx ? mcap * fx : mcap;
-  if(usd < 50e6) return "micro cap";
-  if(usd < 300e6) return "low cap";
-  if(usd < 2e9) return "small cap";
+  // Seuils exprimés en dollars.
+  if(mcap < 50e6) return "micro cap";
+  if(mcap < 300e6) return "low cap";
+  if(mcap < 2e9) return "small cap";
   return "capitalisation plus grande";
 }
 function timeStr(ts){
@@ -392,13 +398,6 @@ function refresh(){
           rows.forEach(function(r){ next[r.id] = r; });
           data = next;
         }));
-    }
-    if(state.cur === "chf"){
-      // Taux CHF -> USD pour classer la capitalisation (micro / low / small cap).
-      jobs.push(api("/simple/price?ids=tether&vs_currencies=chf").then(function(j){
-        var rate = j && j.tether && j.tether.chf;
-        if(rate) fx = 1 / rate;
-      }).catch(function(){}));
     }
     return Promise.all(jobs);
   }).then(function(){
@@ -800,7 +799,7 @@ function renderPaper(){
   var settings = h("details", {}, [
     h("summary", {text:"Réglages de la simulation"}),
     h("div", {class:"settings"}, [
-      h("label", {for:"sim-start"}, ["Capital de départ (devise affichée)", startInput]),
+      h("label", {for:"sim-start"}, ["Capital de départ ($)", startInput]),
       h("label", {for:"sim-fee"}, ["Frais + écart simulés par ordre (%)", feeInput])
     ]),
     h("p", {class:"note", text:"Le capital s'applique à la prochaine réinitialisation. Les frais et l'écart rendent la simulation plus réaliste : sur les petites capitalisations, ils sont souvent supérieurs à 1 %."}),
@@ -827,8 +826,6 @@ function renderExchange(){
 
 function render(){
   setStatus();
-  $("cur-chf").setAttribute("aria-pressed", String(state.cur === "chf"));
-  $("cur-usd").setAttribute("aria-pressed", String(state.cur === "usd"));
 
   var banners = $("banners");
   banners.textContent = "";
@@ -885,18 +882,6 @@ $("add-form").addEventListener("submit", function(ev){
 });
 
 /* ---------- Contrôles ---------- */
-function setCur(c){
-  if(state.cur === c) return;
-  state.cur = c;
-  // Les seuils de prix sont exprimés dans la devise choisie : on les efface pour éviter les erreurs.
-  state.tokens.forEach(function(t){
-    if(t.alerts){ t.alerts.above = null; t.alerts.below = null; }
-  });
-  firedKeys = {}; active = {}; data = {}; tradeUI = null;
-  save(); render(); refresh();
-}
-$("cur-chf").addEventListener("click", function(){ setCur("chf"); });
-$("cur-usd").addEventListener("click", function(){ setCur("usd"); });
 $("refresh").addEventListener("click", function(){ clearTimeout(timer); refresh(); });
 document.addEventListener("visibilitychange", function(){
   if(!document.hidden && (!lastOk || Date.now() - lastOk > state.interval * 1000)){ clearTimeout(timer); refresh(); }
