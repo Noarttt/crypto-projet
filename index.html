@@ -92,6 +92,8 @@ button{cursor:pointer}
 .rules{display:flex; flex-direction:column; gap:14px; margin-top:10px}
 .rule{display:flex; flex-direction:column; gap:8px; align-items:flex-start}
 .rule .alerts,.rule .presets{width:100%}
+.music{display:flex; align-items:center; gap:10px}
+.music input[type="range"]{flex:1; max-width:220px; accent-color:var(--accent)}
 .slider{display:flex; align-items:center; gap:8px}
 .trade .slider input[type="range"]{flex:1; width:auto; padding:0; border:0; background:none; accent-color:var(--accent)}
 details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weight:500}
@@ -126,6 +128,10 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
     </div>
   </div>
   <div class="status" id="status" role="status">Chargement…</div>
+  <div class="music">
+    <button type="button" class="btn small" id="music-btn" aria-pressed="false">Musique : désactivée</button>
+    <input id="music-vol" type="range" min="0" max="100" step="5" value="40" aria-label="Volume de la musique">
+  </div>
   <div id="banners"></div>
   <section class="panel" id="paper" aria-label="Portefeuille simulé"></section>
   <ul class="list" id="list"></ul>
@@ -1009,6 +1015,110 @@ $("refresh").addEventListener("click", function(){ clearTimeout(timer); refresh(
 document.addEventListener("visibilitychange", function(){
   if(!document.hidden && (!lastOk || Date.now() - lastOk > state.interval * 1000)){ clearTimeout(timer); refresh(); }
 });
+
+/* MUSIC-START */
+// Ambiance sonore générée dans le navigateur (aucun fichier, aucun droit d'auteur).
+var Music = (function(){
+  var ctx = null, master = null, filter = null, chordTimer = null, bellTimer = null;
+  var playing = false, vol = 0.24, step = 0;
+  var CHORDS = [[220,261.63,329.63,493.88],[174.61,220,261.63,329.63],[261.63,329.63,392,493.88],[196,246.94,293.66,329.63]];
+  var BASS = [110,87.31,130.81,98];
+  var BELLS = [440,523.25,659.25,783.99,880,987.77];
+  function init(){
+    var AC = window.AudioContext || window.webkitAudioContext;
+    if(!AC) return false;
+    ctx = new AC();
+    master = ctx.createGain(); master.gain.value = 0;
+    filter = ctx.createBiquadFilter(); filter.type = "lowpass"; filter.frequency.value = 1800; filter.Q.value = 0.4;
+    var delay = ctx.createDelay(1.5); delay.delayTime.value = 0.45;
+    var fb = ctx.createGain(); fb.gain.value = 0.35;
+    var wet = ctx.createGain(); wet.gain.value = 0.4;
+    filter.connect(master);
+    filter.connect(delay); delay.connect(fb); fb.connect(delay); delay.connect(wet); wet.connect(master);
+    master.connect(ctx.destination);
+    return true;
+  }
+  function tone(freq, type, t0, attack, hold, release, peak, detune){
+    var o = ctx.createOscillator(), g = ctx.createGain();
+    o.type = type; o.frequency.value = freq; if(detune) o.detune.value = detune;
+    g.gain.setValueAtTime(0.0001, t0);
+    g.gain.linearRampToValueAtTime(peak, t0 + attack);
+    g.gain.setValueAtTime(peak, t0 + attack + hold);
+    g.gain.linearRampToValueAtTime(0.0001, t0 + attack + hold + release);
+    o.connect(g); g.connect(filter);
+    o.start(t0); o.stop(t0 + attack + hold + release + 0.1);
+  }
+  function chord(){
+    if(!playing) return;
+    var t = ctx.currentTime + 0.05, i = step % CHORDS.length;
+    step++;
+    CHORDS[i].forEach(function(f, k){
+      tone(f, "sine", t, 2.5, 3.5, 3, 0.05, (k - 1.5) * 4);
+      tone(f * 2, "triangle", t, 3, 3, 3, 0.008, 0);
+    });
+    tone(BASS[i], "sine", t, 2, 4, 3, 0.09, 0);
+  }
+  function bell(){
+    if(!playing) return;
+    var f = BELLS[Math.floor(Math.random() * BELLS.length)];
+    tone(f, "triangle", ctx.currentTime + 0.05, 0.02, 0.05, 2.2, 0.025, 0);
+    bellTimer = setTimeout(bell, 2500 + Math.random() * 4000);
+  }
+  function start(){
+    if(playing) return true;
+    if(!ctx && !init()) return false;
+    if(ctx.state === "suspended") ctx.resume();
+    playing = true;
+    master.gain.cancelScheduledValues(ctx.currentTime);
+    master.gain.setTargetAtTime(vol, ctx.currentTime, 0.8);
+    chord();
+    chordTimer = setInterval(chord, 8000);
+    bellTimer = setTimeout(bell, 3000);
+    return true;
+  }
+  function stop(){
+    if(!playing) return;
+    playing = false;
+    clearInterval(chordTimer); clearTimeout(bellTimer);
+    master.gain.cancelScheduledValues(ctx.currentTime);
+    master.gain.setTargetAtTime(0, ctx.currentTime, 0.5);
+    setTimeout(function(){ if(!playing && ctx) ctx.suspend(); }, 2500);
+  }
+  function setVolume(v){
+    vol = v;
+    if(ctx && playing){
+      master.gain.cancelScheduledValues(ctx.currentTime);
+      master.gain.setTargetAtTime(v, ctx.currentTime, 0.2);
+    }
+  }
+  return {start:start, stop:stop, setVolume:setVolume, isPlaying:function(){ return playing; }};
+})();
+/* MUSIC-END */
+
+(function(){
+  var btn = $("music-btn"), vol = $("music-vol");
+  var saved = 40;
+  try{ var sv = parseInt(localStorage.getItem("veille-crypto.music-vol"), 10); if(sv >= 0 && sv <= 100) saved = sv; }catch(e){}
+  vol.value = String(saved);
+  Music.setVolume(saved / 100 * 0.6);
+  function paint(){
+    var on = Music.isPlaying();
+    btn.setAttribute("aria-pressed", String(on));
+    btn.classList.toggle("sel", on);
+    btn.textContent = "Musique : " + (on ? "activée" : "désactivée");
+  }
+  btn.addEventListener("click", function(){
+    if(Music.isPlaying()){ Music.stop(); }
+    else if(!Music.start()){ btn.textContent = "Musique indisponible sur ce navigateur"; return; }
+    paint();
+  });
+  vol.addEventListener("input", function(){
+    var v = Number(vol.value);
+    Music.setVolume(v / 100 * 0.6);
+    try{ localStorage.setItem("veille-crypto.music-vol", String(v)); }catch(e){}
+  });
+  paint();
+})();
 
 render();
 refresh();
