@@ -2520,7 +2520,7 @@ function convertToUsdcForm(k, c, gi){
   var info = h("p", {class:"note", text:""});
   var msg = h("p", {class:WAL.cuOk ? "banner ok" : "banner err", hidden: WAL.cuMsg ? null : "hidden", text:WAL.cuMsg || ""});
   var gl = gasLine(gi);
-  var reserve = Math.max(1, gi.usd * 10), spare = Math.max(0, c.natUsd - reserve);   // réserve : 1 bridge + 3 swaps + cette conversion (5 actions) avec une marge x2 sur le gas, au moins 1 $
+  var reserve = Math.max(1, gi.usd * 24), spare = Math.max(0, c.natUsd - reserve);   // réserve : 1 bridge (≈ 3 swaps de gas : approbation + dépôt + frais de messagerie éventuels) + 3 swaps + cette conversion = 7 actions, marge x3, au moins 1 $ (≈ 21 x le gas d'un swap, arrondi à 24)
   function upd(){
     CV.amount = inp.value;
     var a = numOrNull(inp.value);
