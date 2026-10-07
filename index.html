@@ -12,6 +12,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&display=swap">
+<script>try{var th=localStorage.getItem("veille-crypto.theme");if(th==="light"||th==="dark")document.documentElement.setAttribute("data-theme",th);}catch(e){}</script>
 <title>Veille crypto</title>
 <style>
 /* Concept : un carnet de veille, une ligne par jeton, les chiffres en police à chasse fixe. */
@@ -25,13 +26,20 @@
   color-scheme:light;
 }
 @media (prefers-color-scheme: dark){
-  :root{
+  :root:not([data-theme="light"]){
     --bg:#0e151c; --surface:#16202a; --ink:#e6edf3; --muted:#93a3b2; --line:#26333f;
     --accent:#6aa3ff; --accent-ink:#0b1420; --up:#4cc38a; --down:#ff7b6e;
     --warn-bg:#3a2f10; --warn-ink:#f1d38a; --err-bg:#3c1b17; --err-ink:#ffb4aa;
     --sim-bg:#14284a; --sim-ink:#b9d2ff;
     color-scheme:dark;
   }
+}
+:root[data-theme="dark"]{
+  --bg:#0e151c; --surface:#16202a; --ink:#e6edf3; --muted:#93a3b2; --line:#26333f;
+  --accent:#6aa3ff; --accent-ink:#0b1420; --up:#4cc38a; --down:#ff7b6e;
+  --warn-bg:#3a2f10; --warn-ink:#f1d38a; --err-bg:#3c1b17; --err-ink:#ffb4aa;
+  --sim-bg:#14284a; --sim-ink:#b9d2ff;
+  color-scheme:dark;
 }
 *{box-sizing:border-box}
 html{-webkit-text-size-adjust:100%}
@@ -2935,6 +2943,14 @@ function renderOptions(){
   var ae = document.activeElement;
   if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
   root.textContent = "";
+  var cur = themeNow();
+  root.appendChild(h("section", {class:"panel"}, [
+    h("h2", {style:"margin:0; font-size:1.05rem", text:"Apparence"}),
+    h("div", {class:"subtabs", role:"group", "aria-label":"Thème"}, [["auto", "Automatique"], ["light", "Mode clair"], ["dark", "Mode sombre"]].map(function(t){
+      return h("button", {type:"button", class:cur === t[0] ? "sel" : "", "aria-pressed":String(cur === t[0]), onclick:function(){ applyTheme(t[0]); renderOptions(); }, text:t[1]});
+    })),
+    h("p", {class:"note", text:"« Automatique » suit le réglage de ton téléphone."})
+  ]));
   var keyIn = h("input", {id:"pump-key", type:"password", placeholder:"Clé API Helius", value:PUMP.key, autocomplete:"off", autocapitalize:"none", autocorrect:"off", spellcheck:"false"});
   var form = h("form", {class:"add", style:"padding:0; border:0; background:none"}, [keyIn, h("button", {class:"btn primary", type:"submit", text: PUMP.key ? "Remplacer la clé" : "Enregistrer la clé"})]);
   form.style.flexDirection = "column";
@@ -2959,6 +2975,15 @@ function renderOptions(){
     }, text:"Supprimer la clé"}));
   root.appendChild(h("section", {class:"panel"}, kids));
 }
+function applyTheme(t){
+  var el = document.documentElement;
+  if(t === "light" || t === "dark") el.setAttribute("data-theme", t); else el.removeAttribute("data-theme");
+  try{ if(t === "light" || t === "dark") localStorage.setItem("veille-crypto.theme", t); else localStorage.removeItem("veille-crypto.theme"); }catch(e){}
+  var dark = t === "dark" || (t !== "light" && window.matchMedia && window.matchMedia("(prefers-color-scheme: dark)").matches);
+  var m = document.querySelector('meta[name="theme-color"]');
+  if(m) m.setAttribute("content", dark ? "#0e151c" : "#f4f6f8");
+}
+function themeNow(){ return document.documentElement.getAttribute("data-theme") || "auto"; }
 function renderPump(){
   var root = $("view-pump");
   var ae = document.activeElement;
@@ -2997,6 +3022,7 @@ function renderPump(){
   root.appendChild(h("p", {class:"note", text:"Données brutes de la blockchain : la plupart de ces jetons n'ont aucune valeur durable et beaucoup sont des arnaques ou ne peuvent pas être revendus. Rien ici n'est un conseil. Le suivi (« Suivre ») n'est possible qu'une fois le jeton listé sur DexScreener."}));
 }
 
+applyTheme(themeNow() === "auto" ? null : themeNow());
 render();
 refresh();
 // après un rechargement de la page, on reste dans l'onglet où on était
