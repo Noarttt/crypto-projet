@@ -122,6 +122,11 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .tabs{position:fixed; left:0; right:0; bottom:0; z-index:10; display:flex; background:var(--surface); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom,0px)}
 .tabs button{flex:1; padding:14px 8px; border:0; background:none; color:var(--muted); font:600 .95rem var(--font); cursor:pointer}
 .tabs button.sel{color:var(--accent); box-shadow:inset 0 3px 0 var(--accent)}
+.wgroup{display:flex; flex-direction:column; gap:6px}
+.wrow{display:flex; justify-content:space-between; gap:10px; font-size:.88rem; padding:6px 0; border-bottom:1px solid var(--line)}
+.wrow .mono{font-family:var(--mono); text-align:right; white-space:nowrap}
+.wrow .nm{min-width:0; overflow-wrap:anywhere}
+.whead{display:flex; justify-content:space-between; gap:10px; align-items:baseline}
 .brbest{border:1px solid var(--accent); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:6px; background:var(--bg)}
 .brbest .big{font-size:1.15rem; font-weight:600}
 .brlist{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
@@ -168,10 +173,12 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   <p class="note">Cours fournis par l'API publique de CoinGecko et, pour les jetons des échanges décentralisés, par DexScreener (historique : GeckoTerminal), avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. La simulation utilise de l'argent fictif aux prix affichés, avec des frais et un écart simulés : en réel, sur les petites capitalisations, l'écart entre achat et vente et le glissement sont souvent plus grands. Information uniquement : ce n'est pas un conseil d'investissement.</p>
   </div>
   <div class="view" id="view-bridge" hidden></div>
+  <div class="view" id="view-wallet" hidden></div>
 </main>
 <nav class="tabs" aria-label="Navigation">
   <button type="button" id="tab-track" class="sel" aria-pressed="true">Suivi</button>
   <button type="button" id="tab-bridge" aria-pressed="false">Bridge</button>
+  <button type="button" id="tab-wallet" aria-pressed="false">Wallet</button>
 </nav>
 <script>
 (function(){
@@ -337,6 +344,7 @@ var DEFAULT = {
   interval: 60,
   exchange: "none",
   bridge: {from:"base", to:"solana", amount:300, pick:"auto"},
+  wallets: [],
   paper: newPaper("usd", 300),
   tokens: [
     {sym:"MAGIC", id:"magic", alerts:mkAlerts()},
@@ -372,6 +380,7 @@ function load(){
   if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
   if(!(s.bridge.amount > 0)) s.bridge.amount = 300;
   if(typeof s.bridge.pick !== "string") s.bridge.pick = "auto";
+  if(!Array.isArray(s.wallets)) s.wallets = [];
   // Tout est désormais en dollars. Les anciens réglages en CHF (simulation, seuils de prix) sont remis à zéro.
   if(s.cur !== "usd" || s.paper.cur !== "usd"){
     s.cur = "usd";
@@ -1616,6 +1625,7 @@ function render(){
   renderNotifRow();
   syncLive();
   if(currentTab === "bridge") renderBridge();
+  if(currentTab === "wallet") renderWallet();
 }
 
 /* ---------- Ajout de jetons ---------- */
@@ -1799,16 +1809,19 @@ function showTab(name){
   currentTab = name;
   $("view-track").hidden = name !== "track";
   $("view-bridge").hidden = name !== "bridge";
-  ["track", "bridge"].forEach(function(n){
+  $("view-wallet").hidden = name !== "wallet";
+  ["track", "bridge", "wallet"].forEach(function(n){
     var b = $("tab-" + n);
     b.classList.toggle("sel", n === name);
     b.setAttribute("aria-pressed", String(n === name));
   });
   if(name === "bridge") renderBridge();
+  if(name === "wallet"){ renderWallet(); walletRefresh(false); }
   window.scrollTo(0, 0);
 }
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
 $("tab-bridge").addEventListener("click", function(){ showTab("bridge"); });
+$("tab-wallet").addEventListener("click", function(){ showTab("wallet"); });
 
 /* ---------- Devis en direct (actualisés en continu tant que l'onglet Bridge est ouvert) ----------
    Across : son API publique, toutes les 10 s. Autres ponts : l'API de devis de LI.FI, un pont à la fois (le plus
@@ -2015,6 +2028,231 @@ function renderBridge(){
   ]));
 
   root.appendChild(h("p", {class:"note", text:"Règle appliquée : on prend le pont le moins cher ; si un autre est plus de 20 % plus rapide pour moins de 10 % de surcoût, on prend celui-là, sauf quand Ethereum est concerné (le prix prime alors toujours). Les coûts viennent de devis en direct quand ils sont disponibles (Across et LI.FI), sinon d'estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) ; le devis réel sur le site du pont fait foi. Cette application ne déplace aucun fonds : tu confirmes avec ton portefeuille sur le site du pont. Pour Solana, garde un peu de SOL pour les frais. Information uniquement, pas un conseil d'investissement."}));
+}
+
+/* ---------- Wallet : actifs par blockchain (lecture seule, aucune clé demandée) ---------- */
+var WAL = {data:{}, busy:false, px:null, pxT:0, timersOn:false, showSmall:false, msg:""};
+var EVM_CHAINS = ["ethereum", "base", "arbitrum", "optimism", "polygon", "bsc", "avalanche"];
+var BLOCKSCOUT = {ethereum:"https://eth.blockscout.com", base:"https://base.blockscout.com", optimism:"https://optimism.blockscout.com",
+  arbitrum:"https://arbitrum.blockscout.com", polygon:"https://polygon.blockscout.com"};
+var NATIVE = {
+  ethereum:{sym:"ETH", coin:"ethereum"}, base:{sym:"ETH", coin:"ethereum"}, arbitrum:{sym:"ETH", coin:"ethereum"}, optimism:{sym:"ETH", coin:"ethereum"},
+  polygon:{sym:"POL", coin:"polygon-ecosystem-token", alt:"matic-network"}, bsc:{sym:"BNB", coin:"binancecoin"},
+  avalanche:{sym:"AVAX", coin:"avalanche-2"}, solana:{sym:"SOL", coin:"solana"}
+};
+var SPL_PROGRAMS = ["TokenkegQfeZyiNwAJbNbGKPFXCWuBvf9Ss623VQ5DA", "TokenzQdBNbLqP5VEhdkAMa2e1t1Pn1fEvEzQcW6BGHm"];
+function walletKind(a){
+  if(/^0x[a-fA-F0-9]{40}$/.test(a)) return "evm";
+  if(/^[1-9A-HJ-NP-Za-km-z]{32,44}$/.test(a)) return "sol";
+  return null;
+}
+function nativePx(){
+  if(WAL.px && Date.now() - WAL.pxT < 60000) return Promise.resolve(WAL.px);
+  return api("/simple/price?ids=ethereum,binancecoin,polygon-ecosystem-token,matic-network,avalanche-2,solana&vs_currencies=usd").then(function(j){
+    WAL.px = j; WAL.pxT = Date.now(); return j;
+  });
+}
+function nativePrice(chain, px){
+  var n = NATIVE[chain];
+  return (px[n.coin] && px[n.coin].usd) || (n.alt && px[n.alt] && px[n.alt].usd) || null;
+}
+/* Prix des jetons sans cours connu, via DexScreener (par adresse de contrat, 30 maximum à la fois) */
+function fillPrices(chain, tokens, addrOf){
+  var need = tokens.filter(function(t){ return !(t.price > 0); }).slice(0, 30);
+  if(!need.length) return Promise.resolve();
+  return dexApi("/tokens/" + need.map(addrOf).join(",")).then(function(j){
+    var best = {};
+    (j.pairs || []).forEach(function(p){
+      if(p.chainId !== chain || !p.priceUsd || !p.baseToken) return;
+      var k = p.baseToken.address.toLowerCase(), liq = (p.liquidity && p.liquidity.usd) || 0;
+      if(!best[k] || liq > best[k].liq) best[k] = {liq:liq, price:parseFloat(p.priceUsd), sym:p.baseToken.symbol, name:p.baseToken.name};
+    });
+    need.forEach(function(t){
+      var b = best[addrOf(t).toLowerCase()];
+      if(b){ t.price = b.price; t.priceSrc = "DexScreener"; if(!t.sym || t.sym === "?") t.sym = b.sym; if(!t.name) t.name = b.name; }
+    });
+  }).catch(function(){});
+}
+function fetchEvmChain(addr, chain, px){
+  var g = GAS_CHAINS[chain], nat = NATIVE[chain];
+  var natP = rpcCall(g.rpc, "eth_getBalance", [addr, "latest"]).then(function(h){
+    var qty = Number(BigInt(h)) / 1e18;
+    return {sym:nat.sym, name:nat.sym, qty:qty, price:nativePrice(chain, px), native:true};
+  }).catch(function(){ return null; });
+  var tokP = BLOCKSCOUT[chain]
+    ? extApi(BLOCKSCOUT[chain], "Blockscout", "/api/v2/addresses/" + addr + "/token-balances").then(function(list){
+        return (Array.isArray(list) ? list : []).filter(function(x){ return x.token && x.token.type === "ERC-20" && x.value; }).map(function(x){
+          var dec = parseInt(x.token.decimals, 10) || 0;
+          return {sym:x.token.symbol || "?", name:x.token.name || "", addr:x.token.address, qty:Number(BigInt(x.value)) / Math.pow(10, dec),
+            price:parseFloat(x.token.exchange_rate) || null, priceSrc:"Blockscout"};
+        }).filter(function(t){ return t.qty > 0; });
+      }).catch(function(){ return null; })
+    : Promise.resolve(null);
+  return Promise.all([natP, tokP]).then(function(r){
+    var toks = r[1] || [];
+    return fillPrices(chain, toks, function(t){ return t.addr; }).then(function(){
+      return {chain:chain, native:r[0], tokens:toks, tokensKnown: !!BLOCKSCOUT[chain] && r[1] !== null, tokensUnsupported: !BLOCKSCOUT[chain]};
+    });
+  });
+}
+function fetchSolana(addr, px){
+  var rpc = GAS_CHAINS.solana.rpc;
+  var natP = rpcCall(rpc, "getBalance", [addr]).then(function(r){
+    return {sym:"SOL", name:"SOL", qty:(r && r.value || 0) / 1e9, price:nativePrice("solana", px), native:true};
+  }).catch(function(){ return null; });
+  var tokPs = SPL_PROGRAMS.map(function(pid){
+    return rpcCall(rpc, "getTokenAccountsByOwner", [addr, {programId:pid}, {encoding:"jsonParsed"}]).then(function(r){
+      return (r && r.value || []).map(function(v){
+        var info = v.account && v.account.data && v.account.data.parsed && v.account.data.parsed.info;
+        return info ? {mint:info.mint, qty:parseFloat(info.tokenAmount && info.tokenAmount.uiAmount) || 0} : null;
+      }).filter(function(x){ return x && x.qty > 0; });
+    }).catch(function(){ return null; });
+  });
+  return Promise.all([natP].concat(tokPs)).then(function(r){
+    var byMint = {}, ok = false;
+    r.slice(1).forEach(function(list){ if(list){ ok = true; list.forEach(function(x){ byMint[x.mint] = (byMint[x.mint] || 0) + x.qty; }); } });
+    var toks = Object.keys(byMint).map(function(m){ return {sym:"?", name:"", addr:m, qty:byMint[m], price:null}; });
+    return fillPrices("solana", toks, function(t){ return t.addr; }).then(function(){
+      return {chain:"solana", native:r[0], tokens:toks, tokensKnown:ok, tokensUnsupported:false};
+    });
+  });
+}
+function fetchWallet(w){
+  return nativePx().then(function(px){
+    var jobs = w.kind === "sol" ? [fetchSolana(w.addr, px)] : EVM_CHAINS.map(function(c){ return fetchEvmChain(w.addr, c, px); });
+    return Promise.all(jobs);
+  }).then(function(chains){
+    WAL.data[w.addr] = {t:Date.now(), chains:chains};
+  });
+}
+function walletRefresh(force){
+  if(WAL.busy || !state.wallets.length) return;
+  var now = Date.now(), stale = state.wallets.filter(function(w){ return force || !WAL.data[w.addr] || now - WAL.data[w.addr].t > 55000; });
+  if(!stale.length) return;
+  WAL.busy = true; WAL.msg = "";
+  var chain = Promise.resolve();
+  stale.forEach(function(w){
+    chain = chain.then(function(){ return fetchWallet(w).catch(function(e){ WAL.msg = describeError(e); }); });
+  });
+  chain.then(function(){ WAL.busy = false; if(currentTab === "wallet") renderWallet(); });
+  if(currentTab === "wallet") renderWallet();
+}
+function startWalletTimer(){
+  if(WAL.timersOn) return;
+  WAL.timersOn = true;
+  setInterval(function(){ if(currentTab === "wallet" && !document.hidden) walletRefresh(false); }, 60000);
+}
+function chainLabel(c){ return BR_CHAINS[c] ? BR_CHAINS[c].label : c; }
+function assetRow(a){
+  var usd = a.price > 0 ? a.qty * a.price : null;
+  return h("div", {class:"wrow"}, [
+    h("div", {class:"nm"}, [h("div", {text:a.sym + (a.name && a.name !== a.sym ? " · " + a.name : "")}),
+      h("div", {class:"note", text: a.addr ? shortAddr(a.addr) : "monnaie du réseau"})]),
+    h("div", {class:"mono"}, [h("div", {text:fmtQty(a.qty)}), h("div", {class:"note", text: usd == null ? "prix inconnu" : fmtMoney(usd) + " $"})])
+  ]);
+}
+function chainValue(c){
+  var v = 0;
+  if(c.native && c.native.price > 0) v += c.native.qty * c.native.price;
+  c.tokens.forEach(function(t){ if(t.price > 0) v += t.qty * t.price; });
+  return v;
+}
+function renderWallet(){
+  var root = $("view-wallet");
+  var ae = document.activeElement;
+  if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
+  startWalletTimer();
+  root.textContent = "";
+  var cur = CUR_SYMBOL[state.cur];
+
+  // 1) Simulation
+  var p = state.paper, simGroups = {}, simTotal = p.cash;
+  Object.keys(p.pos).forEach(function(id){
+    var pos = p.pos[id], tok = state.tokens.filter(function(t){ return t.id === id; })[0];
+    var chain = tok && tok.dex ? tok.dex.chain : "centralisé";
+    var pr = priceOf(id) || pos.last, val = pos.qty * pr;
+    simTotal += val;
+    (simGroups[chain] = simGroups[chain] || []).push({sym:pos.sym, name:(tok && tok.name) || "", qty:pos.qty, price:pr});
+  });
+  var simKids = [h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Simulation (argent fictif)"}), h("b", {class:"mono", text:fmtMoney(simTotal) + " " + cur})]),
+    h("div", {class:"wrow"}, [h("div", {class:"nm", text:"Solde simulé (liquidités)"}), h("div", {class:"mono", text:fmtMoney(p.cash) + " " + cur})])];
+  var simChains = Object.keys(simGroups);
+  if(!simChains.length) simKids.push(h("p", {class:"note", text:"Aucune position simulée ouverte."}));
+  simChains.forEach(function(ch){
+    simKids.push(h("div", {class:"wgroup"}, [h("h3", {style:"margin:6px 0 0; font-size:.95rem", text: ch === "centralisé" ? "Jetons de bourses (suivis via CoinGecko)" : chainLabel(ch)})]
+      .concat(simGroups[ch].map(assetRow))));
+  });
+  root.appendChild(h("section", {class:"panel"}, simKids));
+
+  // 2) Portefeuilles réels en lecture seule
+  var addrIn = h("input", {id:"w-addr", type:"text", placeholder:"Adresse publique (0x… ou Solana)", autocomplete:"off", autocapitalize:"none", autocorrect:"off", spellcheck:"false"});
+  var labIn = h("input", {id:"w-label", type:"text", placeholder:"Nom (facultatif)", autocomplete:"off"});
+  var note = h("p", {class:"note", text:"Colle l'adresse publique d'un portefeuille : l'app lit ses actifs sur chaque blockchain, en lecture seule. Ne saisis jamais de phrase secrète ni de clé privée."});
+  var form = h("form", {class:"add", style:"padding:0; border:0; background:none"}, [addrIn, labIn, h("button", {class:"btn primary", type:"submit", text:"Ajouter ce portefeuille"})]);
+  form.style.flexDirection = "column";
+  form.addEventListener("submit", function(ev){
+    ev.preventDefault();
+    var a = addrIn.value.trim(), k = walletKind(a);
+    if(!k){ note.textContent = "Adresse invalide : attendu 0x suivi de 40 caractères, ou une adresse Solana."; return; }
+    if(state.wallets.some(function(w){ return w.addr.toLowerCase() === a.toLowerCase(); })){ note.textContent = "Ce portefeuille est déjà dans la liste."; return; }
+    state.wallets.push({addr:a, kind:k, label:labIn.value.trim()});
+    save(); walletRefresh(true); renderWallet();
+  });
+  var total = 0, anyData = false;
+  var wKids = [h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Portefeuilles réels (lecture seule)"})]), form, note];
+  root.appendChild(h("section", {class:"panel"}, wKids));
+
+  state.wallets.forEach(function(w){
+    var d = WAL.data[w.addr], kids = [];
+    var wtotal = 0;
+    var title = (w.label ? w.label + " · " : "") + shortAddr(w.addr) + (w.kind === "evm" ? " (EVM)" : " (Solana)");
+    var rm = h("button", {type:"button", class:"remove", onclick:function(){
+      state.wallets = state.wallets.filter(function(x){ return x !== w; }); delete WAL.data[w.addr]; save(); renderWallet();
+    }, text:"Retirer ce portefeuille"});
+    if(!d){
+      kids.push(h("div", {class:"whead"}, [h("h3", {style:"margin:0; font-size:1rem", text:title})]));
+      kids.push(h("p", {class:"note", text: WAL.busy ? "Lecture des actifs…" : "Pas encore de données."}));
+    } else {
+      anyData = true;
+      var hidden = 0, noPrice = 0, groups = [];
+      d.chains.forEach(function(c){
+        var rows = [], cv = chainValue(c);
+        wtotal += cv;
+        var assets = (c.native && c.native.qty > 0 ? [c.native] : []).concat(c.tokens.slice().sort(function(a, b){ return (b.qty * (b.price || 0)) - (a.qty * (a.price || 0)); }));
+        assets.forEach(function(a){
+          var usd = a.price > 0 ? a.qty * a.price : null;
+          if(usd == null){ noPrice++; if(!WAL.showSmall) return; }
+          else if(usd < 1 && !WAL.showSmall){ hidden++; return; }
+          rows.push(assetRow(a));
+        });
+        if(!rows.length && !c.tokensUnsupported && cv === 0) return;
+        var g = [h("div", {class:"whead"}, [h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:chainLabel(c.chain)}), h("b", {class:"mono", text:fmtMoney(cv) + " $"})])].concat(rows);
+        if(c.tokensUnsupported) g.push(h("p", {class:"note", text:"Jetons non lus sur cette blockchain (monnaie native seulement)."}));
+        else if(!c.tokensKnown) g.push(h("p", {class:"note", text:"Lecture des jetons impossible pour l'instant sur cette blockchain."}));
+        groups.push(h("div", {class:"wgroup"}, g));
+      });
+      total += wtotal;
+      kids.push(h("div", {class:"whead"}, [h("h3", {style:"margin:0; font-size:1rem", text:title}), h("b", {class:"mono", text:fmtMoney(wtotal) + " $"})]));
+      if(!groups.length) kids.push(h("p", {class:"note", text:"Aucun actif trouvé sur les blockchains lues."}));
+      groups.forEach(function(g){ kids.push(g); });
+      if(hidden || noPrice) kids.push(h("p", {class:"note", text:(hidden ? hidden + " actif(s) de moins de 1 $ masqué(s)" : "") + (hidden && noPrice ? " · " : "") + (noPrice ? noPrice + " jeton(s) sans prix connu masqué(s)" : "") + ". Les jetons inconnus peuvent être des arnaques envoyées sans demande : ne les touche pas."}));
+      kids.push(h("p", {class:"note", text:"Données de " + timeStr(d.t) + "."}));
+    }
+    kids.push(rm);
+    root.appendChild(h("section", {class:"panel"}, kids));
+  });
+
+  if(state.wallets.length){
+    var tools = [h("button", {type:"button", class:"btn small", onclick:function(){ walletRefresh(true); }, text: WAL.busy ? "Actualisation…" : "Actualiser"}),
+      h("button", {type:"button", class:"btn small" + (WAL.showSmall ? " sel" : ""), "aria-pressed":String(WAL.showSmall), onclick:function(){ WAL.showSmall = !WAL.showSmall; renderWallet(); },
+        text: WAL.showSmall ? "Masquer les petits montants" : "Afficher tout (petits montants, sans prix)"})];
+    root.appendChild(h("section", {class:"panel"}, [
+      h("div", {class:"whead"}, [h("h3", {style:"margin:0; font-size:1rem", text:"Total des portefeuilles réels"}), h("b", {class:"mono", text:anyData ? fmtMoney(total) + " $" : "…"})]),
+      h("div", {class:"acts"}, tools),
+      WAL.msg ? h("p", {class:"banner err", text:WAL.msg}) : null
+    ]));
+  }
+  root.appendChild(h("p", {class:"note", text:"Les soldes sont lus avec des services publics (nœuds publicnode et Solana, Blockscout, DexScreener, CoinGecko) : ils voient l'adresse que tu colles. Les prix peuvent être décalés ou absents pour les jetons peu échangés. Jetons lus sur Ethereum, Base, Arbitrum, Optimism, Polygon et Solana ; sur BNB Chain et Avalanche, seule la monnaie native est lue. Information uniquement, pas un conseil d'investissement."}));
 }
 
 render();
