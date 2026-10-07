@@ -245,8 +245,12 @@ function estimateCost(o){
   } else {
     var v = o.volume > 0 ? o.volume : 0;
     parts.fee = 0.1;
-    parts.spread = v < 1e5 ? 1.5 : v < 1e6 ? 0.5 : v < 1e7 ? 0.2 : 0.1;
-    parts.impact = v > 0 ? Math.min(50, 100 * amt / v) : 2;
+    if(o.bookPct != null){   // écart + impact réels, calculés sur le carnet d'ordres en direct
+      parts.spread = 0; parts.impact = Math.max(0, Math.min(50, o.bookPct)); parts.bookLive = true;
+    } else {
+      parts.spread = v < 1e5 ? 1.5 : v < 1e6 ? 0.5 : v < 1e7 ? 0.2 : 0.1;
+      parts.impact = v > 0 ? Math.min(50, 100 * amt / v) : 2;
+    }
     parts.gas = 0;
     parts.vol = Math.min(1.5, chg * 0.015);
   }
@@ -727,8 +731,38 @@ function fetchSwapQuote(t, side, amt, price){
     });
   });
 }
+/* Jetons des bourses centralisées : carnet d'ordres de Binance (paire SYMBOLE/USDT), parcouru niveau par niveau. */
+function fetchBookQuote(t, side, amt){
+  var sym = t.sym.replace(/[^A-Za-z0-9]/g, "").toUpperCase(), key = swapKey(t, side, amt);
+  return extApi("https://data-api.binance.vision/api/v3", "Binance", "/depth?symbol=" + sym + "USDT&limit=500").then(function(j){
+    var bids = (j.bids || []).map(function(x){ return [parseFloat(x[0]), parseFloat(x[1])]; });
+    var asks = (j.asks || []).map(function(x){ return [parseFloat(x[0]), parseFloat(x[1])]; });
+    if(!bids.length || !asks.length) throw new Error("book");
+    var mid = (bids[0][0] + asks[0][0]) / 2, pct;
+    if(side === "buy"){
+      var rem = amt, qty = 0;
+      for(var i = 0; i < asks.length && rem > 1e-9; i++){
+        var take = Math.min(rem, asks[i][0] * asks[i][1]);
+        qty += take / asks[i][0]; rem -= take;
+      }
+      if(rem > amt * 0.005 || !(qty > 0)) throw new Error("depth");
+      pct = ((amt - rem) / qty / mid - 1) * 100;
+    } else {
+      var tokens = amt / mid, left = tokens, got = 0;
+      for(var k = 0; k < bids.length && left > 1e-12; k++){
+        var tk = Math.min(left, bids[k][1]);
+        got += tk * bids[k][0]; left -= tk;
+      }
+      if(left > tokens * 0.005) throw new Error("depth");
+      pct = (1 - got / ((tokens - left) * mid)) * 100;
+    }
+    if(!(pct > -1 && pct < 60)) throw new Error("insane");
+    SWAPQ.data[key] = {ok:true, t:Date.now(), pct:Math.max(0, pct), gas:null, book:true};
+  });
+}
 function scheduleSwapQuote(t, side, amt, done){
-  if(!t.dex || !(amt > 0)) return;
+  if(!(amt > 0)) return;
+  if(!t.dex && SWAPQ.nob && SWAPQ.nob[t.id] && Date.now() - SWAPQ.nob[t.id] < 600000) return;
   var key = swapKey(t, side, amt), q = SWAPQ.data[key];
   if(q && Date.now() - q.t < (q.ok ? 20000 : 60000)) return;
   clearTimeout(SWAPQ.timer);
@@ -736,17 +770,21 @@ function scheduleSwapQuote(t, side, amt, done){
     var d = data[t.id], price = d && d.current_price;
     if(SWAPQ.busy) return;
     SWAPQ.busy = true;
-    fetchSwapQuote(t, side, amt, price).catch(function(){ SWAPQ.data[key] = {ok:false, t:Date.now()}; })
+    (t.dex ? fetchSwapQuote(t, side, amt, price) : fetchBookQuote(t, side, amt))
+      .catch(function(e){
+        SWAPQ.data[key] = {ok:false, t:Date.now()};
+        if(!t.dex && e && (e.status === 400 || e.status === 404)){ SWAPQ.nob = SWAPQ.nob || {}; SWAPQ.nob[t.id] = Date.now(); }  // pas coté sur Binance
+      })
       .then(function(){ SWAPQ.busy = false; if(done) done(); });
   }, 500);
 }
 function orderCost(t, amountUsd, side){
   var p = state.paper, d = t.id ? data[t.id] : null;
   if(p.feeMode === "fixed" || !d) return {pct:p.fee, fixed:true, parts:null};
-  var sq = d.dex ? swapLive(t, side || "buy", amountUsd) : null;
+  var sq = swapLive(t, side || "buy", amountUsd);
   return estimateCost({amount:amountUsd, dex:!!d.dex, liquidity:d.liquidity_usd, volume:d.total_volume,
     chg24:d.price_change_percentage_24h, chain:d.chain, gasUsd: d.dex ? ((sq && sq.gas != null) ? sq.gas : gasUsdFor(d.chain)) : null,
-    swapPct: sq ? sq.pct : null});
+    swapPct: (sq && d.dex) ? sq.pct : null, bookPct: (sq && !d.dex) ? sq.pct : null});
 }
 function costText(c){
   if(c.fixed) return "frais et écart simulés (fixes) : " + c.pct + " %";
@@ -754,8 +792,11 @@ function costText(c){
   if(P.swapLive){ out.push("échange " + f(P.impact) + " (devis en direct : frais du pool + impact)"); }
   else {
     out.push("frais " + f(P.fee));
-    if(P.spread) out.push("écart " + f(P.spread));
-    out.push("impact sur le prix " + f(P.impact) + " (estimation)");
+    if(P.bookLive) out.push("carnet Binance " + f(P.impact) + " (écart + impact, en direct)");
+    else {
+      if(P.spread) out.push("écart " + f(P.spread) + " (estimation)");
+      out.push("impact sur le prix " + f(P.impact) + " (estimation)");
+    }
   }
   if(P.gas) out.push("réseau " + f(P.gas) + " (gas ≈ " + (P.gasUsd < 0.1 ? P.gasUsd.toFixed(3) : P.gasUsd.toFixed(2)) + " $" + (P.gasLive ? ", en direct" : ", valeur moyenne") + ")");
   out.push("volatilité " + f(P.vol));
@@ -1183,7 +1224,7 @@ function tradePanel(t, d){
 
   function updatePreview(){
     var fr = buy ? ts.fraction : sellFrac();
-    if(t.dex) scheduleSwapQuote(t, buy ? "buy" : "sell", buy ? buySpend() : pos.qty * fr * price, updatePreview);
+    scheduleSwapQuote(t, buy ? "buy" : "sell", buy ? buySpend() : pos.qty * fr * price, updatePreview);
     if(buy){
       var spend = buySpend();
       if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
