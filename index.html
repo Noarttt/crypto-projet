@@ -543,102 +543,85 @@ function alertField(t, key, label, value){
   return h("label", {for:id}, [label, input]);
 }
 
-/* ----- Panneau d'ordre simulé, dans la carte du jeton ----- */
+/* ----- Panneau d'ordre simulé, dans la carte du jeton (identique pour l'achat et la vente) ----- */
 function tradePanel(t, d){
   var p = state.paper;
   var cur = CUR_SYMBOL[state.cur];
   var price = d.current_price;
+  var buy = tradeUI.side === "buy";
+  var pos = p.pos[t.id];
+  if(!buy && !pos){ tradeUI = null; return null; }
+  if(!(tradeUI.fraction > 0)) tradeUI.fraction = 0.25;
+
   var box = h("div", {class:"trade"});
+  var pctLabel = h("p", {class:"note", text:""});
   var preview = h("p", {class:"note", text:""});
   var err = h("p", {class:"banner err", hidden:"hidden", text:""});
-
   function showErr(msg){ err.textContent = msg; err.hidden = false; }
   function done(msg){ setFlash(msg, "ok"); tradeUI = null; save(); render(); }
 
-  if(tradeUI.side === "buy"){
-    var amtId = "buy-" + t.sym;
-    var input = h("input", {id:amtId, type:"text", inputmode:"decimal", placeholder:"0,00", value: tradeUI.amount || ""});
-    var updateBuy = function(){
-      tradeUI.amount = input.value;
-      var s = numOrNull(input.value);
-      if(!s){ preview.textContent = "Entre un montant à dépenser."; return; }
-      var fee = s * p.fee / 100;
-      var qty = (s - fee) / price;
-      preview.textContent = "≈ " + fmtQty(qty) + " " + t.sym + " pour " + fmtMoney(s) + " " + cur + " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ")";
-    };
-    var buyBtns = [];
-    var markBuy = function(pc){ buyBtns.forEach(function(x){ x.b.classList.toggle("sel", x.pc === pc); }); };
-    input.addEventListener("input", function(){ markBuy(null); updateBuy(); });
-    var presets = h("div", {class:"presets big"}, [25, 50, 75, 100].map(function(pc){
-      var b = h("button", {type:"button", class:"btn big", onclick:function(){
-        input.value = String(Math.floor(p.cash * pc) / 100);
-        markBuy(pc);
-        updateBuy();
-      }, text: pc === 100 ? "All in" : pc + " %"});
-      buyBtns.push({b:b, pc:pc});
-      return b;
-    }));
-    box.appendChild(h("label", {for:amtId}, ["Montant à dépenser (" + cur + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur, input]));
-    box.appendChild(presets);
-    box.appendChild(preview);
-    box.appendChild(err);
-    box.appendChild(h("div", {class:"acts"}, [
-      h("button", {type:"button", class:"btn primary small", onclick:function(){
-        var s = numOrNull(input.value);
-        var r = paperBuy(p, t.id, t.sym, s, price);
-        if(!r.ok){ showErr(r.msg); return; }
-        done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(s) + " " + cur + ".");
-      }, text:"Confirmer l'achat (simulé)"}),
-      h("button", {type:"button", class:"btn small", onclick:function(){ tradeUI = null; render(); }, text:"Annuler"})
-    ]));
-    updateBuy();
-  } else {
-    var pos = p.pos[t.id];
-    if(!pos){ tradeUI = null; return null; }
-    if(!(tradeUI.fraction > 0)) tradeUI.fraction = 1;
-    var updateSell = function(){
-      var gross = pos.qty * tradeUI.fraction * price;
-      var fee = gross * p.fee / 100;
-      var cost = pos.cost * tradeUI.fraction;
-      var pnl = gross - fee - cost;
-      preview.textContent = "Vente de " + fmtQty(pos.qty * tradeUI.fraction) + " " + t.sym + " ≈ " + fmtMoney(gross - fee) + " " + cur +
-        " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ") · résultat ≈ " + (pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(pnl)) + " " + cur;
-    };
-    var pctLabel = h("p", {class:"note", text:""});
-    var slider = h("input", {id:"sell-" + t.sym, type:"range", min:"5", max:"100", step:"5", value:String(Math.round(tradeUI.fraction * 100)), "aria-label":"Part de la position à vendre, par tranche de 5 %"});
-    var sellBtns = [];
-    var setPct = function(v){
-      v = Math.max(5, Math.min(100, Math.round(v / 5) * 5));
-      tradeUI.fraction = v / 100;
-      sellBtns.forEach(function(x){ x.b.classList.toggle("sel", x.pc === v); });
-      slider.value = String(v);
-      pctLabel.textContent = "Part à vendre : " + v + " % de la position (par tranche de 5 %)";
-      updateSell();
-    };
-    slider.addEventListener("input", function(){ setPct(Number(slider.value)); });
-    var minus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 - 5); }, text:"−5 %"});
-    var plus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 + 5); }, text:"+5 %"});
-    var bigs = h("div", {class:"presets big"}, [25, 50, 75, 100].map(function(pc){
-      var b = h("button", {type:"button", class:"btn big", onclick:function(){ setPct(pc); }, text: pc === 100 ? "All in" : pc + " %"});
-      sellBtns.push({b:b, pc:pc});
-      return b;
-    }));
-    setPct(tradeUI.fraction * 100);
-    box.appendChild(bigs);
-    box.appendChild(pctLabel);
-    box.appendChild(h("div", {class:"slider"}, [minus, slider, plus]));
-    box.appendChild(preview);
-    box.appendChild(err);
-    box.appendChild(h("div", {class:"acts"}, [
-      h("button", {type:"button", class:"btn primary small", onclick:function(){
-        var r = paperSell(p, t.id, tradeUI.fraction, price);
-        if(!r.ok){ showErr(r.msg); return; }
-        done("Vente simulée : " + fmtMoney(r.net) + " " + cur + " reçus (résultat " + (r.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(r.pnl)) + " " + cur + ").");
-      }, text:"Confirmer la vente (simulée)"}),
-      h("button", {type:"button", class:"btn small", onclick:function(){ tradeUI = null; render(); }, text:"Annuler"})
-    ]));
-    updateSell();
+  function spendFor(fr){ return Math.min(p.cash, Math.round(p.cash * fr * 100) / 100); }
+
+  function updatePreview(){
+    var fr = tradeUI.fraction;
+    if(buy){
+      var spend = spendFor(fr);
+      if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
+      var fee = spend * p.fee / 100;
+      var qty = (spend - fee) / price;
+      preview.textContent = "Achat de " + fmtMoney(spend) + " " + cur + " ≈ " + fmtQty(qty) + " " + t.sym +
+        " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur;
+    } else {
+      var gross = pos.qty * fr * price;
+      var feeS = gross * p.fee / 100;
+      var pnl = gross - feeS - pos.cost * fr;
+      preview.textContent = "Vente de " + fmtQty(pos.qty * fr) + " " + t.sym + " ≈ " + fmtMoney(gross - feeS) + " " + cur +
+        " (frais et écart simulés : " + fmtMoney(feeS) + " " + cur + ") · résultat ≈ " + (pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(pnl)) + " " + cur;
+    }
   }
+
+  var slider = h("input", {id:(buy ? "buy-" : "sell-") + t.sym, type:"range", min:"5", max:"100", step:"5",
+    value:String(Math.round(tradeUI.fraction * 100)),
+    "aria-label": buy ? "Part du solde à investir, par tranche de 5 %" : "Part de la position à vendre, par tranche de 5 %"});
+  var bigBtns = [];
+  var setPct = function(v){
+    v = Math.max(5, Math.min(100, Math.round(v / 5) * 5));
+    tradeUI.fraction = v / 100;
+    bigBtns.forEach(function(x){ x.b.classList.toggle("sel", x.pc === v); });
+    slider.value = String(v);
+    pctLabel.textContent = (buy ? "Part du solde à investir : " + v + " % du solde simulé" : "Part à vendre : " + v + " % de la position") + " (par tranche de 5 %)";
+    updatePreview();
+  };
+  slider.addEventListener("input", function(){ setPct(Number(slider.value)); });
+  var bigs = h("div", {class:"presets big"}, [25, 50, 75, 100].map(function(pc){
+    var b = h("button", {type:"button", class:"btn big", onclick:function(){ setPct(pc); }, text: pc === 100 ? "All in" : pc + " %"});
+    bigBtns.push({b:b, pc:pc});
+    return b;
+  }));
+  var minus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 - 5); }, text:"−5 %"});
+  var plus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 + 5); }, text:"+5 %"});
+  setPct(tradeUI.fraction * 100);
+
+  box.appendChild(bigs);
+  box.appendChild(pctLabel);
+  box.appendChild(h("div", {class:"slider"}, [minus, slider, plus]));
+  box.appendChild(preview);
+  box.appendChild(err);
+  box.appendChild(h("div", {class:"acts"}, [
+    h("button", {type:"button", class:"btn primary small", onclick:function(){
+      if(buy){
+        var spend = spendFor(tradeUI.fraction);
+        var r = paperBuy(p, t.id, t.sym, spend, price);
+        if(!r.ok){ showErr(r.msg); return; }
+        done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(spend) + " " + cur + ".");
+      } else {
+        var rs = paperSell(p, t.id, tradeUI.fraction, price);
+        if(!rs.ok){ showErr(rs.msg); return; }
+        done("Vente simulée : " + fmtMoney(rs.net) + " " + cur + " reçus (résultat " + (rs.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(rs.pnl)) + " " + cur + ").");
+      }
+    }, text: buy ? "Confirmer l'achat (simulé)" : "Confirmer la vente (simulée)"}),
+    h("button", {type:"button", class:"btn small", onclick:function(){ tradeUI = null; render(); }, text:"Annuler"})
+  ]));
   return box;
 }
 
@@ -706,11 +689,11 @@ function card(t){
   var acts = [];
   var canTrade = !!(d && d.current_price > 0 && simOk);
   acts.push(h("button", {type:"button", class:"btn small", disabled: canTrade ? null : "disabled", onclick:function(){
-    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "buy") ? null : {id:t.id, side:"buy", amount:"", fraction:1};
+    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "buy") ? null : {id:t.id, side:"buy", fraction:0.25};
     render();
   }, text:"Acheter (simulé)"}));
   acts.push(h("button", {type:"button", class:"btn small", disabled: (canTrade && pos) ? null : "disabled", onclick:function(){
-    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "sell") ? null : {id:t.id, side:"sell", amount:"", fraction:1};
+    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "sell") ? null : {id:t.id, side:"sell", fraction:0.25};
     render();
   }, text:"Vendre (simulé)"}));
   var ex = EXCHANGES[state.exchange];
