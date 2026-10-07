@@ -127,6 +127,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .tabs{position:fixed; left:0; right:0; bottom:0; z-index:10; display:flex; background:var(--surface); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom,0px)}
 .tabs button{flex:1; padding:14px 8px; border:0; background:none; color:var(--muted); font:600 .95rem var(--font); cursor:pointer}
 .tabs button.sel{color:var(--accent); box-shadow:inset 0 3px 0 var(--accent)}
+#track-sub{margin:0 0 12px}
 .subtabs{display:flex; gap:6px; overflow-x:auto; padding-bottom:4px}
 .subtabs button{flex:0 0 auto; border:1px solid var(--line); background:var(--bg); color:var(--muted); border-radius:999px; padding:6px 12px; font:600 .85rem var(--font); cursor:pointer}
 .subtabs button.sel{color:var(--accent); border-color:var(--accent)}
@@ -162,6 +163,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
       <button type="button" class="btn icon" id="refresh" aria-label="Actualiser" title="Actualiser"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v5h-5"/></svg></button>
     </div>
   </div>
+  <div class="subtabs" id="track-sub" role="group" aria-label="Suivi"><button type="button" id="sub-list" class="sel" aria-pressed="true">Jetons suivis</button><button type="button" id="sub-pump" aria-pressed="false">Pump.fun</button></div>
   <div class="view" id="view-track">
   <div class="status" id="status" role="status">Chargement…</div>
   <div class="music">
@@ -196,7 +198,6 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   <button type="button" id="tab-track" class="sel" aria-pressed="true">Suivi</button>
   <button type="button" id="tab-bridge" aria-pressed="false">Bridge</button>
   <button type="button" id="tab-wallet" aria-pressed="false">Wallet</button>
-  <button type="button" id="tab-pump" aria-pressed="false">Pump</button>
 </nav>
 <script>
 (function(){
@@ -2079,25 +2080,34 @@ var Music = (function(){
 
 /* ---------- Onglets et pont (bridge) ---------- */
 var currentTab = "track";
+var TRK = {sub:"list"};   // sous-onglet de Suivi : "list" (jetons suivis) ou "pump" (nouveaux lancements Pump.fun)
+function pumpOn(){ return currentTab === "track" && TRK.sub === "pump"; }
 var TAB_KEY = "veille-crypto.tab";
 function rememberTab(){
-  try{ localStorage.setItem(TAB_KEY, JSON.stringify({tab:currentTab, sub:(typeof WAL !== "undefined" && WAL.sub) || "main"})); }catch(e){}
-  try{ history.replaceState(null, "", location.pathname + location.search + (currentTab === "track" ? "" : "#" + currentTab)); }catch(e){}
+  try{ localStorage.setItem(TAB_KEY, JSON.stringify({tab:currentTab, sub:(typeof WAL !== "undefined" && WAL.sub) || "main", trk:TRK.sub})); }catch(e){}
+  var hash = currentTab === "track" ? (TRK.sub === "pump" ? "#pump" : "") : "#" + currentTab;
+  try{ history.replaceState(null, "", location.pathname + location.search + hash); }catch(e){}
 }
 function showTab(name){
   currentTab = name;
   rememberTab();
-  $("view-track").hidden = name !== "track";
+  $("track-sub").hidden = name !== "track";
+  $("view-track").hidden = !(name === "track" && TRK.sub === "list");
+  $("view-pump").hidden = !pumpOn();
+  ["list", "pump"].forEach(function(n){
+    var sb = $("sub-" + n);
+    sb.classList.toggle("sel", TRK.sub === n);
+    sb.setAttribute("aria-pressed", String(TRK.sub === n));
+  });
   $("view-bridge").hidden = name !== "bridge";
   $("view-wallet").hidden = name !== "wallet";
-  $("view-pump").hidden = name !== "pump";
-  ["track", "bridge", "wallet", "pump"].forEach(function(n){
+  ["track", "bridge", "wallet"].forEach(function(n){
     var b = $("tab-" + n);
     b.classList.toggle("sel", n === name);
     b.setAttribute("aria-pressed", String(n === name));
   });
-  if(name !== "pump" && typeof pumpDisconnect === "function") pumpDisconnect();
-  if(name === "pump") pumpEnter();
+  if(!pumpOn() && typeof pumpDisconnect === "function") pumpDisconnect();
+  if(pumpOn()) pumpEnter();
   if(name === "bridge") renderBridge();
   if(name === "wallet"){ renderWallet(); }
   window.scrollTo(0, 0);
@@ -2105,9 +2115,10 @@ function showTab(name){
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
 $("tab-bridge").addEventListener("click", function(){ showTab("bridge"); });
 $("tab-wallet").addEventListener("click", function(){ showTab("wallet"); });
-$("tab-pump").addEventListener("click", function(){ showTab("pump"); });
+$("sub-list").addEventListener("click", function(){ TRK.sub = "list"; showTab("track"); });
+$("sub-pump").addEventListener("click", function(){ TRK.sub = "pump"; showTab("track"); });
 document.addEventListener("visibilitychange", function(){
-  if(currentTab !== "pump") return;
+  if(!pumpOn()) return;
   if(document.hidden) pumpDisconnect(); else pumpEnter();
 });
 
@@ -2814,7 +2825,7 @@ function parseCurve(b64, solUsd){
   return {priceSol:priceSol, priceUsd:priceSol * solUsd, mcapUsd:mcapSol * solUsd, progress:complete ? 100 : prog, complete:complete};
 }
 function pumpUrl(path){ return "https://mainnet.helius-rpc.com/?api-key=" + encodeURIComponent(PUMP.key); }
-function pumpSetStatus(st, msg){ PUMP.status = st; PUMP.msg = msg || ""; if(currentTab === "pump") renderPump(); }
+function pumpSetStatus(st, msg){ PUMP.status = st; PUMP.msg = msg || ""; if(pumpOn()) renderPump(); }
 function pumpConnect(){
   if(!PUMP.key || PUMP.ws || !PUMP.active) return;
   clearTimeout(PUMP.timer);
@@ -2862,7 +2873,7 @@ function pumpConnect(){
 var pumpRenderT = null;
 function pumpSchedule(){
   if(pumpRenderT) return;
-  pumpRenderT = setTimeout(function(){ pumpRenderT = null; if(currentTab === "pump"){ pumpPoll(); renderPump(); } }, 700);
+  pumpRenderT = setTimeout(function(){ pumpRenderT = null; if(pumpOn()){ pumpPoll(); renderPump(); } }, 700);
 }
 function pumpDisconnect(){
   PUMP.active = false;
@@ -2885,14 +2896,14 @@ function pumpPoll(){
     });
     PUMP.lastPoll = Date.now(); PUMP.pollErr = "";
   }).catch(function(e){ PUMP.pollErr = "Lecture des prix impossible (" + (e && e.message ? e.message : "erreur") + ")."; })
-    .then(function(){ PUMP.polling = false; if(currentTab === "pump") renderPump(); });
+    .then(function(){ PUMP.polling = false; if(pumpOn()) renderPump(); });
 }
 function pumpEnter(){
   PUMP.active = true;
   if(PUMP.key){
     pumpConnect();
     if(!PUMP.poll) PUMP.poll = setInterval(function(){ if(!document.hidden) pumpPoll(); }, 10000);
-    if(!PUMP.tick) PUMP.tick = setInterval(function(){ if(currentTab === "pump" && !document.hidden){ var ae = document.activeElement; if(!(ae && ae.tagName === "INPUT")) renderPump(); } }, 5000);
+    if(!PUMP.tick) PUMP.tick = setInterval(function(){ if(pumpOn() && !document.hidden){ var ae = document.activeElement; if(!(ae && ae.tagName === "INPUT")) renderPump(); } }, 5000);
   }
   renderPump();
 }
@@ -2976,7 +2987,8 @@ refresh();
   var h0 = (location.hash || "").replace("#", "");
   var name = ["track", "bridge", "wallet", "pump"].indexOf(h0) >= 0 ? h0 : (saved && saved.tab);
   if(saved && saved.sub) WAL.sub = saved.sub;
-  if(name === "bridge" || name === "wallet" || name === "pump") showTab(name);
+  if(name === "pump" || (name === "track" && !h0 && saved && saved.trk === "pump")){ TRK.sub = "pump"; name = "track"; }
+  if(name === "bridge" || name === "wallet" || TRK.sub === "pump") showTab(name || "track");
 })();
 })();
 </script>
