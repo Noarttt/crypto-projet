@@ -38,7 +38,7 @@ html{-webkit-text-size-adjust:100%}
 [hidden]{display:none!important}
 body{
   margin:0; background:var(--bg); color:var(--ink); font:15px/1.45 var(--font);
-  padding-block:calc(env(safe-area-inset-top,0px) + 16px) calc(env(safe-area-inset-bottom,0px) + 32px);
+  padding-block:calc(env(safe-area-inset-top,0px) + 16px) calc(env(safe-area-inset-bottom,0px) + 88px);
   padding-inline:16px;
 }
 main{max-width:640px; margin-inline:auto; display:flex; flex-direction:column; gap:14px; min-width:0}
@@ -118,6 +118,16 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .add input{flex:1; min-width:0; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--bg)}
 .cands{display:flex; flex-direction:column; gap:6px; margin:0; padding:0; list-style:none}
 .cands button{width:100%; text-align:left; border:1px solid var(--line); background:var(--bg); border-radius:8px; padding:8px 10px}
+.view{display:flex; flex-direction:column; gap:14px; min-width:0}
+.tabs{position:fixed; left:0; right:0; bottom:0; z-index:10; display:flex; background:var(--surface); border-top:1px solid var(--line); padding-bottom:env(safe-area-inset-bottom,0px)}
+.tabs button{flex:1; padding:14px 8px; border:0; background:none; color:var(--muted); font:600 .95rem var(--font); cursor:pointer}
+.tabs button.sel{color:var(--accent); box-shadow:inset 0 3px 0 var(--accent)}
+.brbest{border:1px solid var(--accent); border-radius:10px; padding:12px 14px; display:flex; flex-direction:column; gap:6px; background:var(--bg)}
+.brbest .big{font-size:1.15rem; font-weight:600}
+.brlist{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
+.brlist li{border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; justify-content:space-between; gap:10px; font-size:.88rem; align-items:center}
+.brlist li button{border:0; background:none; text-align:left; padding:0; color:inherit; font:inherit; width:100%; display:flex; justify-content:space-between; gap:10px}
+.brlist .mono{font-family:var(--mono); white-space:nowrap}
 .note{font-size:.8rem; color:var(--muted); margin:0}
 .empty{background:var(--surface); border:1px dashed var(--line); border-radius:10px; padding:18px; color:var(--muted); text-align:center}
 @media (prefers-reduced-motion: no-preference){ .card{transition:border-color .2s} }
@@ -131,6 +141,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
       <button type="button" class="btn" id="refresh">Actualiser</button>
     </div>
   </div>
+  <div class="view" id="view-track">
   <div class="status" id="status" role="status">Chargement…</div>
   <div class="music">
     <button type="button" class="btn small" id="music-btn" aria-pressed="false">Musique : désactivée</button>
@@ -155,7 +166,13 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   </section>
   <p class="note" id="notif-row"></p>
   <p class="note">Cours fournis par l'API publique de CoinGecko et, pour les jetons des échanges décentralisés, par DexScreener (historique : GeckoTerminal), avec un léger décalage possible. Les alertes ne se déclenchent que lorsque cette page est ouverte. La simulation utilise de l'argent fictif aux prix affichés, avec des frais et un écart simulés : en réel, sur les petites capitalisations, l'écart entre achat et vente et le glissement sont souvent plus grands. Information uniquement : ce n'est pas un conseil d'investissement.</p>
+  </div>
+  <div class="view" id="view-bridge" hidden></div>
 </main>
+<nav class="tabs" aria-label="Navigation">
+  <button type="button" id="tab-track" class="sel" aria-pressed="true">Suivi</button>
+  <button type="button" id="tab-bridge" aria-pressed="false">Bridge</button>
+</nav>
 <script>
 (function(){
 "use strict";
@@ -253,10 +270,60 @@ function autoBuyTrigger(level, price, cash){
 }
 /* PAPER-CORE-END */
 
+/* BRIDGE-CORE-START */
+var BR_CHAINS = {
+  ethereum:{label:"Ethereum", id:1}, base:{label:"Base", id:8453}, arbitrum:{label:"Arbitrum", id:42161},
+  optimism:{label:"Optimism", id:10}, polygon:{label:"Polygon", id:137}, bsc:{label:"BNB Chain", id:56},
+  avalanche:{label:"Avalanche", id:43114}, solana:{label:"Solana", id:1151111081099710}
+};
+/* Estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) ; fixed = $ fixes, pct = % du montant,
+   time = secondes typiques. Les blockchains prises en charge sont celles que je connais : à vérifier sur le devis du pont. */
+var BRIDGES = [
+  {k:"across",   name:"Across",   fixed:0.16,  pct:0.030,  time:8,   url:"https://app.across.to/bridge",
+    chains:["ethereum","base","arbitrum","optimism","polygon","solana"]},
+  {k:"debridge", name:"deBridge", fixed:0.38,  pct:0.034,  time:40,  url:"https://app.debridge.finance/",
+    chains:["ethereum","base","arbitrum","optimism","polygon","bsc","avalanche","solana"]},
+  {k:"stargate", name:"Stargate", fixed:0.33,  pct:0.057,  time:60,  url:"https://stargate.finance/bridge",
+    chains:["ethereum","base","arbitrum","optimism","polygon","bsc","avalanche"]},
+  {k:"cctp",     name:"CCTP (Circle, USDC natif)", fixed:0.238, pct:0.0004, time:960, url:null,
+    chains:["ethereum","base","arbitrum","optimism","polygon","avalanche","solana"]},
+  {k:"mayan",    name:"Mayan",    fixed:0.25,  pct:0.05,   time:12,  url:"https://swap.mayan.finance/", est:true,
+    chains:["ethereum","base","arbitrum","optimism","polygon","bsc","avalanche","solana"]},
+  {k:"synapse",  name:"Synapse",  fixed:0.76,  pct:0.14,   time:180, url:"https://synapseprotocol.com/",
+    chains:["ethereum","base","arbitrum","optimism","polygon","bsc","avalanche"]},
+  {k:"hop",      name:"Hop",      fixed:0.54,  pct:0.108,  time:750, url:"https://hop.exchange/",
+    chains:["ethereum","base","arbitrum","optimism","polygon"]}
+];
+/* Règle de choix : le pont le moins cher (frais du pont + gas de départ). Exception : si un autre pont est
+   plus de 20 % plus rapide pour un surcoût strictement inférieur à 10 %, on prend le plus rapide de ceux-là. */
+function pickBridge(from, to, amount, srcGasUsd){
+  if(from === to || !(amount > 0)) return null;
+  var gas = srcGasUsd > 0 ? srcGasUsd : 0;
+  var list = BRIDGES.filter(function(b){ return b.chains.indexOf(from) >= 0 && b.chains.indexOf(to) >= 0; })
+    .map(function(b){
+      var fee = b.fixed + amount * b.pct / 100, cost = fee + gas;
+      return {b:b, fee:fee, gas:gas, cost:cost, pct:cost / amount * 100, time:b.time};
+    }).sort(function(x, y){ return x.cost - y.cost; });
+  if(!list.length) return null;
+  var cheapest = list[0];
+  var fast = list.filter(function(x){
+    return x !== cheapest && (x.cost - cheapest.cost) / cheapest.cost < 0.10 && (cheapest.time - x.time) / cheapest.time > 0.20;
+  }).sort(function(x, y){ return x.time - y.time || x.cost - y.cost; });
+  var best = fast.length ? fast[0] : cheapest;
+  return {best:best, reason: fast.length ? "speed" : "cheap", cheapest:cheapest, list:list};
+}
+function fmtDuration(sec){
+  if(sec < 90) return "≈ " + Math.round(sec) + " s";
+  if(sec < 5400) return "≈ " + Math.round(sec / 60) + " min";
+  return "≈ " + (sec / 3600).toFixed(1) + " h";
+}
+/* BRIDGE-CORE-END */
+
 var DEFAULT = {
   cur: "usd",
   interval: 60,
   exchange: "none",
+  bridge: {from:"base", to:"solana", amount:300},
   paper: newPaper("usd", 300),
   tokens: [
     {sym:"MAGIC", id:"magic", alerts:mkAlerts()},
@@ -289,6 +356,8 @@ function load(){
   if(!s.paper || typeof s.paper.cash !== "number" || !s.paper.pos) s.paper = newPaper("usd", 300);
   if(!Array.isArray(s.paper.log)) s.paper.log = [];
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
+  if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
+  if(!(s.bridge.amount > 0)) s.bridge.amount = 300;
   // Tout est désormais en dollars. Les anciens réglages en CHF (simulation, seuils de prix) sont remis à zéro.
   if(s.cur !== "usd" || s.paper.cur !== "usd"){
     s.cur = "usd";
@@ -564,14 +633,17 @@ function rpcCall(url, method, params){
 }
 function gasFresh(chain){ var g = GAS[chain]; return g && Date.now() - g.t < 120000; }
 function gasUsdFor(chain){ var g = GAS[chain]; return (g && Date.now() - g.t < 900000) ? g.usd : null; }
-function refreshGas(){
+var GAS_TRY = {};
+function refreshGas(extra){
   if(gasBusy) return;
   var chains = [];
+  (extra || []).forEach(function(c){ if(GAS_CHAINS[c] && chains.indexOf(c) < 0 && !gasFresh(c) && !(GAS_TRY[c] && Date.now() - GAS_TRY[c] < 60000)) chains.push(c); });
   state.tokens.forEach(function(t){
-    if(t.dex && GAS_CHAINS[t.dex.chain] && chains.indexOf(t.dex.chain) < 0 && !gasFresh(t.dex.chain)) chains.push(t.dex.chain);
+    if(t.dex && GAS_CHAINS[t.dex.chain] && chains.indexOf(t.dex.chain) < 0 && !gasFresh(t.dex.chain) && !(GAS_TRY[t.dex.chain] && Date.now() - GAS_TRY[t.dex.chain] < 60000)) chains.push(t.dex.chain);
   });
   if(!chains.length) return;
   gasBusy = true;
+  chains.forEach(function(c){ GAS_TRY[c] = Date.now(); });
   var ids = [];
   chains.forEach(function(c){ var g = GAS_CHAINS[c]; [g.coin, g.alt].forEach(function(x){ if(x && ids.indexOf(x) < 0) ids.push(x); }); });
   api("/simple/price?ids=" + encodeURIComponent(ids.join(",")) + "&vs_currencies=usd").then(function(px){
@@ -1421,6 +1493,7 @@ function render(){
   renderExchange();
   renderNotifRow();
   syncLive();
+  if(currentTab === "bridge") renderBridge();
 }
 
 /* ---------- Ajout de jetons ---------- */
@@ -1597,6 +1670,111 @@ var Music = (function(){
   });
   paint();
 })();
+
+/* ---------- Onglets et pont (bridge) ---------- */
+var currentTab = "track";
+function showTab(name){
+  currentTab = name;
+  $("view-track").hidden = name !== "track";
+  $("view-bridge").hidden = name !== "bridge";
+  ["track", "bridge"].forEach(function(n){
+    var b = $("tab-" + n);
+    b.classList.toggle("sel", n === name);
+    b.setAttribute("aria-pressed", String(n === name));
+  });
+  if(name === "bridge") renderBridge();
+  window.scrollTo(0, 0);
+}
+$("tab-track").addEventListener("click", function(){ showTab("track"); });
+$("tab-bridge").addEventListener("click", function(){ showTab("bridge"); });
+
+function renderBridge(){
+  var root = $("view-bridge");
+  var ae = document.activeElement;
+  if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
+  var B = state.bridge;
+  refreshGas([B.from]);
+  var g = gasUsdFor(B.from), gLive = g != null;
+  var srcGas = gLive ? g : (GAS_USD[B.from] != null ? GAS_USD[B.from] : 0.5);
+  root.textContent = "";
+
+  function chainSel(id, value, onchange){
+    var sel = h("select", {id:id}, Object.keys(BR_CHAINS).map(function(k){ return h("option", {value:k, text:BR_CHAINS[k].label}); }));
+    sel.value = value;
+    sel.addEventListener("change", function(){ onchange(sel.value); });
+    return sel;
+  }
+  var amt = h("input", {id:"br-amt", type:"text", inputmode:"decimal", value:String(B.amount), autocomplete:"off"});
+  amt.addEventListener("change", function(){
+    var v = numOrNull(amt.value);
+    B.amount = v || 300; save(); renderBridge();
+  });
+  var from = chainSel("br-from", B.from, function(v){ B.from = v; if(B.to === v) B.to = (v === "solana" ? "base" : "solana"); save(); renderBridge(); });
+  var to = chainSel("br-to", B.to, function(v){ B.to = v; if(B.from === v) B.from = (v === "base" ? "ethereum" : "base"); save(); renderBridge(); });
+  var swap = h("button", {type:"button", class:"btn small", "aria-label":"Inverser départ et arrivée", onclick:function(){
+    var t = B.from; B.from = B.to; B.to = t; save(); renderBridge();
+  }, text:"⇅ Inverser"});
+
+  root.appendChild(h("section", {class:"panel"}, [
+    h("h2", {style:"margin:0; font-size:1.05rem", text:"Bridge : passer ses fonds d'une blockchain à une autre"}),
+    h("label", {class:"field", for:"br-from"}, ["Depuis", from]),
+    h("div", {}, [swap]),
+    h("label", {class:"field", for:"br-to"}, ["Vers", to]),
+    h("label", {class:"field", for:"br-amt"}, ["Montant (USDC ou équivalent, en $)", amt]),
+    h("p", {class:"note", text:"Gas de départ sur " + BR_CHAINS[B.from].label + " : ≈ " + (srcGas < 0.1 ? srcGas.toFixed(3) : srcGas.toFixed(2)) + " $ (" + (gLive ? "en direct" : "valeur moyenne") + ")."})
+  ]));
+
+  var pk = pickBridge(B.from, B.to, B.amount, srcGas);
+  var kids = [];
+  if(!pk){
+    kids.push(h("p", {class:"note", text:"Aucun pont de ma liste ne relie ces deux blockchains. Essaie un agrégateur comme Jumper ou passe par une bourse."}));
+  } else {
+    var b = pk.best;
+    var why = pk.reason === "speed"
+      ? "Choisi : au moins 20 % plus rapide que le moins cher (" + pk.cheapest.b.name + ", " + fmtDuration(pk.cheapest.time) + ") pour un surcoût de seulement " +
+        ((b.cost / pk.cheapest.cost - 1) * 100).toFixed(1) + " %."
+      : "Choisi : le moins cher" + (pk.list.length > 1 ? ". Aucun autre pont n'est à la fois plus de 20 % plus rapide et moins de 10 % plus cher." : ".");
+    kids.push(h("div", {class:"brbest"}, [
+      h("div", {class:"note", text:"Pont recommandé"}),
+      h("div", {class:"big", text:b.b.name}),
+      h("div", {text:"Coût total ≈ " + fmtMoney(b.cost) + " $ (" + b.pct.toFixed(2) + " %) · frais du pont " + fmtMoney(b.fee) + " $ + gas de départ " + fmtMoney(b.gas) + " $"}),
+      h("div", {text:"Durée " + fmtDuration(b.time) + " · tu reçois ≈ " + fmtMoney(Math.max(0, B.amount - b.cost)) + " $"}),
+      h("div", {class:"note", text:why}),
+      b.b.est ? h("div", {class:"note", text:"Les tarifs de ce pont sont des estimations moins sûres que les autres."}) : null
+    ]));
+    var links = [];
+    if(b.b.url) links.push(h("a", {class:"btn primary small", href:b.b.url, target:"_blank", rel:"noopener noreferrer", text:"Ouvrir " + b.b.name + " ↗"}));
+    links.push(h("a", {class:"btn small", href:"https://jumper.exchange/?fromChain=" + BR_CHAINS[B.from].id + "&toChain=" + BR_CHAINS[B.to].id,
+      target:"_blank", rel:"noopener noreferrer", text:"Comparer sur Jumper ↗"}));
+    kids.push(h("div", {class:"acts"}, links));
+    if(!b.b.url) kids.push(h("p", {class:"note", text:"CCTP n'a pas d'interface officielle : utilise un portefeuille ou un agrégateur compatible (Jumper)."}));
+    kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (du moins cher au plus cher)"}));
+    kids.push(h("ul", {class:"brlist"}, pk.list.map(function(x){
+      return h("li", {}, [
+        h("span", {text:x.b.name + (x === pk.best ? " ✓" : "")}),
+        h("span", {class:"mono", text:fmtMoney(x.cost) + " $ · " + x.pct.toFixed(2) + " % · " + fmtDuration(x.time)})
+      ]);
+    })));
+  }
+  root.appendChild(h("section", {class:"panel"}, kids));
+
+  // Meilleur pont pour chaque blockchain d'arrivée, au départ de la blockchain choisie
+  var rows = [];
+  Object.keys(BR_CHAINS).forEach(function(k){
+    if(k === B.from) return;
+    var r = pickBridge(B.from, k, B.amount, srcGas);
+    rows.push(h("li", {}, [h("button", {type:"button", onclick:function(){ B.to = k; save(); renderBridge(); }}, [
+      h("span", {text:BR_CHAINS[k].label + (r ? " · " + r.best.b.name : "")}),
+      h("span", {class:"mono", text: r ? fmtMoney(r.best.cost) + " $ · " + fmtDuration(r.best.time) : "aucun pont"})
+    ])]));
+  });
+  root.appendChild(h("section", {class:"panel"}, [
+    h("h3", {style:"margin:0; font-size:.95rem", text:"Depuis " + BR_CHAINS[B.from].label + " : meilleur pont par destination"}),
+    h("ul", {class:"brlist"}, rows)
+  ]));
+
+  root.appendChild(h("p", {class:"note", text:"Règle appliquée : on prend le pont le moins cher ; si un autre est plus de 20 % plus rapide pour moins de 10 % de surcoût, on prend celui-là. Les coûts sont des estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) et du gas en direct : le devis réel sur le site du pont fait foi. Cette application ne déplace aucun fonds : tu confirmes avec ton portefeuille sur le site du pont. Pour Solana, garde un peu de SOL pour les frais. Information uniquement, pas un conseil d'investissement."}));
+}
 
 render();
 refresh();
