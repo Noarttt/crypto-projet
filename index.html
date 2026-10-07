@@ -295,7 +295,7 @@ var BRIDGES = [
     chains:["ethereum","base","arbitrum","optimism","polygon"]}
 ];
 /* Règle de choix : le pont le moins cher (frais du pont + gas de départ). Exception : si un autre pont est
-   plus de 20 % plus rapide pour un surcoût strictement inférieur à 10 %, on prend le plus rapide de ceux-là. */
+   plus de 20 % plus rapide pour un surcoût strictement inférieur à 5 %, on prend le plus rapide de ceux-là. */
 function pickBridge(from, to, amount, srcGasUsd){
   if(from === to || !(amount > 0)) return null;
   var gas = srcGasUsd > 0 ? srcGasUsd : 0;
@@ -307,7 +307,7 @@ function pickBridge(from, to, amount, srcGasUsd){
   if(!list.length) return null;
   var cheapest = list[0];
   var fast = list.filter(function(x){
-    return x !== cheapest && (x.cost - cheapest.cost) / cheapest.cost < 0.10 && (cheapest.time - x.time) / cheapest.time > 0.20;
+    return x !== cheapest && (x.cost - cheapest.cost) / cheapest.cost < 0.05 && (cheapest.time - x.time) / cheapest.time > 0.20;
   }).sort(function(x, y){ return x.time - y.time || x.cost - y.cost; });
   var best = fast.length ? fast[0] : cheapest;
   return {best:best, reason: fast.length ? "speed" : "cheap", cheapest:cheapest, list:list};
@@ -1733,7 +1733,7 @@ function renderBridge(){
     var why = pk.reason === "speed"
       ? "Choisi : au moins 20 % plus rapide que le moins cher (" + pk.cheapest.b.name + ", " + fmtDuration(pk.cheapest.time) + ") pour un surcoût de seulement " +
         ((b.cost / pk.cheapest.cost - 1) * 100).toFixed(1) + " %."
-      : "Choisi : le moins cher" + (pk.list.length > 1 ? ". Aucun autre pont n'est à la fois plus de 20 % plus rapide et moins de 10 % plus cher." : ".");
+      : "Choisi : le moins cher" + (pk.list.length > 1 ? ". Aucun autre pont n'est à la fois plus de 20 % plus rapide et moins de 5 % plus cher." : ".");
     kids.push(h("div", {class:"brbest"}, [
       h("div", {class:"note", text:"Pont recommandé"}),
       h("div", {class:"big", text:b.b.name}),
@@ -1773,7 +1773,7 @@ function renderBridge(){
     h("ul", {class:"brlist"}, rows)
   ]));
 
-  root.appendChild(h("p", {class:"note", text:"Règle appliquée : on prend le pont le moins cher ; si un autre est plus de 20 % plus rapide pour moins de 10 % de surcoût, on prend celui-là. Les coûts sont des estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) et du gas en direct : le devis réel sur le site du pont fait foi. Cette application ne déplace aucun fonds : tu confirmes avec ton portefeuille sur le site du pont. Pour Solana, garde un peu de SOL pour les frais. Information uniquement, pas un conseil d'investissement."}));
+  root.appendChild(h("p", {class:"note", text:"Règle appliquée : on prend le pont le moins cher ; si un autre est plus de 20 % plus rapide pour moins de 5 % de surcoût, on prend celui-là. Les coûts sont des estimations tirées de devis publiés (Base → Arbitrum, USDC, mai 2026) et du gas en direct : le devis réel sur le site du pont fait foi. Cette application ne déplace aucun fonds : tu confirmes avec ton portefeuille sur le site du pont. Pour Solana, garde un peu de SOL pour les frais. Information uniquement, pas un conseil d'investissement."}));
 }
 
 render();
