@@ -226,7 +226,7 @@ function paperSell(p, id, fraction, price, feePct){
 }
 /* Coût estimé d'un ordre, en % du montant : frais, écart acheteur-vendeur, impact sur le prix (selon la liquidité),
    frais de réseau (échanges décentralisés) et dérapage lié à la volatilité du moment. Estimation moyenne, pas un tirage au hasard. */
-var GAS_USD = {ethereum:5, bsc:0.2, solana:0.02, base:0.05, arbitrum:0.1, polygon:0.02, optimism:0.1, avalanche:0.1};
+var GAS_USD = {ethereum:0.3, bsc:0.2, solana:0.02, base:0.05, arbitrum:0.1, polygon:0.02, optimism:0.1, avalanche:0.1};
 function estimateCost(o){
   var amt = o.amount > 0 ? o.amount : 0, parts = {};
   var chg = Math.abs(o.chg24 || 0);
