@@ -144,6 +144,9 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .wrow .mono{font-family:var(--mono); text-align:right; white-space:nowrap}
 .wrow .nm{min-width:0; overflow-wrap:anywhere}
 .whead{display:flex; justify-content:space-between; gap:10px; align-items:baseline}
+.pend{display:flex; flex-direction:column; gap:3px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; background:var(--bg)}
+.pbar{height:6px; border-radius:3px; background:var(--line); overflow:hidden}
+.pfill{height:100%; background:var(--accent); transition:width .9s linear}
 .brcards{display:flex; flex-direction:column; gap:8px}
 .brcard{border:1px solid var(--line); border-radius:10px; padding:6px 10px; background:var(--bg); text-align:left; font:inherit; color:inherit; cursor:pointer; display:flex; flex-direction:column; gap:1px}
 .brcard .big{font-size:.95rem; font-weight:600}
@@ -308,6 +311,44 @@ function paperTransfer(p, from, to, amount, cost, opts){
   p.log = p.log.slice(0, 50);
   return {ok:true, received:amount - cost - drop, fee:cost, drop:drop};
 }
+/* Transfert avec délai : les fonds quittent la blockchain de départ tout de suite (gas payé), puis n'arrivent qu'après la durée du pont. */
+function paperTransferStart(p, from, to, amount, cost, opts){
+  opts = opts || {};
+  var r = paperTransfer(p, from, to, amount, cost, opts);
+  if(!r.ok) return r;
+  var drop = r.drop || 0, natQty = drop > 0 ? drop / opts.dropPrice : 0;
+  p.bal[to] = Math.max(0, p.bal[to] - r.received);
+  if(natQty > 0) p.nat[to] = Math.max(0, p.nat[to] - natQty);
+  p.cash = balSum(p);
+  var secs = Number(opts.time) > 0 ? Number(opts.time) : 0, now = opts.now || Date.now();
+  if(!p.pending) p.pending = [];
+  var item = {id: now + ":" + Math.random().toString(36).slice(2, 7), from: from, to: to, usdc: r.received, nat: natQty, natSym: opts.dropSym || "",
+    t: now, eta: now + secs * 1000, name: opts.name || "", fee: cost, amount: amount};
+  p.pending.push(item);
+  if(p.log[0]) p.log[0].eta = item.eta;
+  if(secs <= 0) paperSettle(p, now);
+  return {ok:true, received:r.received, fee:r.fee, drop:drop, eta:item.eta, secs:secs, pending:secs > 0};
+}
+/* Crédite les transferts dont l'heure d'arrivée est passée (aussi après réouverture de l'appli) ; renvoie ceux qui viennent d'arriver. */
+function paperSettle(p, now){
+  var done = [];
+  if(!p.pending || !p.pending.length) return done;
+  var keep = [];
+  if(!p.bal) p.bal = {};
+  p.pending.forEach(function(x){
+    if(x.eta <= now){
+      p.bal[x.to] = (p.bal[x.to] || 0) + x.usdc;
+      if(x.nat > 0){ if(!p.nat) p.nat = {}; p.nat[x.to] = (p.nat[x.to] || 0) + x.nat; }
+      done.push(x);
+    } else keep.push(x);
+  });
+  if(done.length){
+    p.pending = keep; p.cash = balSum(p);
+    done.forEach(function(x){ p.log.unshift({t:now, side:"arrival", from:x.from, to:x.to, amount:x.usdc, drop:x.nat, natSym:x.natSym, name:x.name}); });
+    p.log = p.log.slice(0, 50);
+  }
+  return done;
+}
 function paperBuy(p, id, sym, spend, price, feePct, chainArg, gas){
   spend = Number(spend);
   if(!(spend > 0)) return {ok:false, msg:"Montant invalide."};
@@ -395,6 +436,7 @@ function estimateCost(o){
 }
 function paperValue(p, priceOf, natPrice){
   var total = p.cash + (natPrice ? natValue(p, natPrice) : 0);
+  (p.pending || []).forEach(function(x){ total += x.usdc + (natPrice && x.nat > 0 ? x.nat * natPrice(x.to) : 0); });
   Object.keys(p.pos).forEach(function(id){
     var pos = p.pos[id];
     var pr = priceOf(id);
@@ -1812,8 +1854,9 @@ function renderPaper(){
   var hist = h("details", {}, [h("summary", {text:"Historique (" + p.log.length + ")"})]);
   if(p.log.length){
     var ul = h("ul", {class:"log"}, p.log.slice(0, 20).map(function(e){
-      if(e.side === "transfer") return h("li", {text:dateStr(e.t) + " · Transfert " + fmtMoney(e.amount) + " " + cur + " : " + placeLabel(e.from) + " → " + placeLabel(e.to) + " · frais " + fmtMoney(e.fee) + " " + cur + (e.drop ? " · gas reçu " + fmtMoney(e.drop) + " $" : "")});
-      if(e.side === "convert") return h("li", {text:dateStr(e.t) + " · Conversion " + fmtMoney(e.amount) + " " + cur + " d'USDC en monnaie native sur " + placeLabel(e.chain) + " · frais " + fmtMoney(e.fee) + " " + cur});
+      if(e.side === "transfer") return h("li", {text:dateStr(e.t) + " · Transfert " + fmtMoney(e.amount) + " " + cur + " : " + placeLabel(e.from) + " → " + placeLabel(e.to) + " · frais " + fmtMoney(e.fee) + " " + cur + (e.drop ? " · gas à recevoir " + fmtMoney(e.drop) + " $" : "") + (e.eta && e.eta > Date.now() ? " · en cours" : "")});
+      if(e.side === "arrival") return h("li", {text:dateStr(e.t) + " · Arrivée " + fmtMoney(e.amount) + " " + cur + " sur " + placeLabel(e.to) + " (depuis " + placeLabel(e.from) + (e.name ? ", via " + e.name : "") + ")" + (e.drop ? " + gas reçu" : "")});
+      if(e.side === "convert") return h("li", {text:dateStr(e.t) + " · Conversion " + fmtMoney(e.amount) + " " + cur + (e.toUsdc ? " de monnaie native en USDC" : " d'USDC en monnaie native") + " sur " + placeLabel(e.chain) + " · frais " + fmtMoney(e.fee) + " " + cur});
       var line = dateStr(e.t) + " · " + (e.auto ? "[" + e.auto + "] " : "") + (e.side === "buy" ? "Achat " : "Vente ") + fmtQty(e.qty) + " " + e.sym + " à " + fmtPrice(e.price) + " " + cur +
         " · " + fmtMoney(e.amount) + " " + cur + (e.side === "sell" && e.pnl != null ? " · résultat " + (e.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(e.pnl)) : "");
       return h("li", {text:line});
@@ -2234,6 +2277,46 @@ function startQuoteTimers(){
   setInterval(function(){ if(bridgeActive()) fetchAcross().then(function(){ if(bridgeActive()) renderBridge(); }); }, 10000);
   setInterval(function(){ if(bridgeActive()) lifiTick().then(function(){ if(bridgeActive()) renderBridge(); }); }, 40000);
 }
+/* Transferts en cours : compte à rebours mis à jour chaque seconde sans refaire la page */
+function fmtCountdown(ms){
+  var s = Math.max(0, Math.ceil(ms / 1000));
+  return s >= 3600 ? Math.floor(s / 3600) + " h " + ("0" + Math.floor(s % 3600 / 60)).slice(-2) + " min" : Math.floor(s / 60) + ":" + ("0" + (s % 60)).slice(-2);
+}
+function pendingNodes(){
+  var list = state.paper.pending || [];
+  if(!list.length) return [];
+  var now = Date.now();
+  return [h("h3", {style:"margin:0; font-size:.95rem", text:"Transferts en cours (" + list.length + ")"})].concat(list.map(function(x){
+    var left = x.eta - now, pct = Math.max(0, Math.min(100, (now - x.t) / Math.max(1, x.eta - x.t) * 100));
+    return h("div", {class:"pend", "data-eta":String(x.eta), "data-t":String(x.t)}, [
+      h("div", {class:"whead"}, [h("b", {text:placeLabel(x.from) + " → " + placeLabel(x.to)}), h("span", {class:"mono eta", text:"arrive dans " + fmtCountdown(left)})]),
+      h("div", {class:"note", text:fmtMoney(x.usdc) + " $ d'USDC" + (x.nat > 0 ? " + " + fmtQty(x.nat) + " " + x.natSym + " (gas)" : "") + (x.name ? " · via " + x.name : "")}),
+      h("div", {class:"pbar"}, [h("div", {class:"pfill", style:"width:" + pct.toFixed(1) + "%"})])
+    ]);
+  }));
+}
+function bridgeDelay(c){ return state.instantBridge ? 0 : c; }
+function pendTick(){
+  var p = state.paper;
+  if(!p.pending || !p.pending.length) return;
+  var now = Date.now(), done = paperSettle(p, now);
+  if(done.length){
+    save();
+    var x = done[done.length - 1];
+    var txt = "Arrivé : " + fmtMoney(x.usdc) + " $ d'USDC" + (x.nat > 0 ? " + " + fmtQty(x.nat) + " " + x.natSym + " de gas" : "") + " sur " + placeLabel(x.to) + (x.name ? " (via " + x.name + ")" : "") + ".";
+    BRMSG = {ok:true, text:txt}; WAL.tfMsg = txt; WAL.tfMsgOk = true;
+    if(currentTab === "bridge") renderBridge();
+    if(currentTab === "wallet") renderWallet();
+    return;
+  }
+  var els = document.querySelectorAll(".pend[data-eta]");
+  for(var i = 0; i < els.length; i++){
+    var e = els[i], eta = Number(e.getAttribute("data-eta")), t0 = Number(e.getAttribute("data-t"));
+    var lab = e.querySelector(".eta"), fill = e.querySelector(".pfill");
+    if(lab) lab.textContent = "arrive dans " + fmtCountdown(eta - now);
+    if(fill) fill.style.width = Math.max(0, Math.min(100, (now - t0) / Math.max(1, eta - t0) * 100)).toFixed(1) + "%";
+  }
+}
 function renderBridge(){
   var root = $("view-bridge");
   var ae = document.activeElement;
@@ -2275,6 +2358,8 @@ function renderBridge(){
     h("p", {class:"note", text:gasLine(gi0).text})
   ]));
 
+  var pn = pendingNodes();
+  if(pn.length) root.appendChild(h("section", {class:"panel"}, pn));
   var pk = pickBridge(B.from, B.to, B.amount, srcGas, Q);
   var kids = [];
   if(!pk){
@@ -2337,8 +2422,8 @@ function renderBridge(){
     links.push(h("a", {class:"btn small", href:"https://jumper.exchange/?fromChain=" + BR_CHAINS[B.from].id + "&toChain=" + BR_CHAINS[B.to].id,
       target:"_blank", rel:"noopener noreferrer", text:"Comparer sur Jumper ↗"}));
     var simBtn = h("button", {type:"button", class:"btn small", onclick:function(){
-      var r = paperTransfer(state.paper, B.from, B.to, B.amount, b.fee, {gas:giB, drop:dropB, dropPrice:natPriceOf(B.to), dropSym:NATIVE[B.to].sym});
-      BRMSG = r.ok ? {ok:true, text:"Transfert simulé : " + fmtMoney(B.amount) + " $ de " + placeLabel(B.from) + " vers " + placeLabel(B.to) + " via " + b.b.name + ", " + fmtMoney(r.received) + " $ d'USDC reçus" + (r.drop > 0 ? " + " + fmtMoney(r.drop) + " $ de gas" : "") + " (frais du pont " + fmtMoney(r.fee) + " $ + gas " + fmtMoney(giB.usd) + " $). Visible dans l'onglet Wallet."}
+      var r = paperTransferStart(state.paper, B.from, B.to, B.amount, b.fee, {gas:giB, drop:dropB, dropPrice:natPriceOf(B.to), dropSym:NATIVE[B.to].sym, time:bridgeDelay(b.time), name:b.b.name});
+      BRMSG = r.ok ? {ok:true, text:"Transfert lancé : " + fmtMoney(B.amount) + " $ de " + placeLabel(B.from) + " vers " + placeLabel(B.to) + " via " + b.b.name + " (frais du pont " + fmtMoney(r.fee) + " $ + gas " + fmtMoney(giB.usd) + " $). " + (r.pending ? fmtMoney(r.received) + " $ d'USDC" + (r.drop > 0 ? " + " + fmtMoney(r.drop) + " $ de gas" : "") + " arriveront dans " + fmtCountdown(r.secs * 1000) + "." : "Arrivée immédiate (mode instantané).")}
         : {ok:false, text:r.msg};
       if(r.ok) save();
       renderBridge();
@@ -2616,6 +2701,7 @@ function renderWallet(){
   if(!WAL.sub) WAL.sub = "main";
   var total = 0;
   chains.forEach(function(k){ total += ch[k].total; });
+  (p.pending || []).forEach(function(x){ total += x.usdc + (x.nat > 0 ? x.nat * natPriceOf(x.to) : 0); });
 
   var tabBtns = [{k:"main", l:"Principal"}].concat(chains.map(function(k){ return {k:k, l:placeLabel(k)}; })).map(function(t){
     return h("button", {type:"button", class:WAL.sub === t.k ? "sel" : "", "aria-pressed":String(WAL.sub === t.k), onclick:function(){ WAL.sub = t.k; WAL.tfMsg = ""; WAL.cvMsg = ""; rememberTab(); renderWallet(); }, text:t.l});
@@ -2626,6 +2712,8 @@ function renderWallet(){
     h("div", {class:"subtabs", role:"group", "aria-label":"Blockchains"}, tabBtns)
   ]));
 
+  var pnw = pendingNodes();
+  if(pnw.length) root.appendChild(h("section", {class:"panel"}, pnw));
   if(WAL.sub === "main"){
     var assets = mainAssets(ch), rows = assets.map(function(a){
       return bigRow(a, a.chains.map(placeLabel).join(", ") + (a.price > 0 && a.sym !== "USDC" ? " · " + fmtMoney(a.price) + " $ l'unité" : ""));
@@ -2754,9 +2842,9 @@ function transferForm(ch, chains, lockFrom){
   go.addEventListener("click", function(){
     var r = calc();
     if(!r.amt || !r.c){ WAL.tfMsg = "Indique un montant et un trajet valides."; WAL.tfMsgOk = false; renderWallet(); return; }
-    var res = paperTransfer(p, TF.from, TF.to, r.amt, r.c.fee, {gas:r.c.gas, drop:r.drop, dropPrice:natPriceOf(TF.to), dropSym:NATIVE[TF.to].sym});
+    var res = paperTransferStart(p, TF.from, TF.to, r.amt, r.c.fee, {gas:r.c.gas, drop:r.drop, dropPrice:natPriceOf(TF.to), dropSym:NATIVE[TF.to].sym, time:bridgeDelay(r.c.time), name:r.c.label.replace(/^pont /, "").replace(/,.*$/, "")});
     if(!res.ok){ WAL.tfMsg = res.msg; WAL.tfMsgOk = false; }
-    else { WAL.tfMsg = "Transfert simulé : " + fmtMoney(r.amt) + " $ de " + placeLabel(TF.from) + " vers " + placeLabel(TF.to) + ", " + fmtMoney(res.received) + " $ d'USDC reçus" + (res.drop > 0 ? " + " + fmtMoney(res.drop) + " $ de gas" : "") + " (frais du pont " + fmtMoney(res.fee) + " $)."; WAL.tfMsgOk = true; TF.amount = ""; TF.drop = ""; save(); }
+    else { WAL.tfMsg = "Transfert lancé : " + fmtMoney(r.amt) + " $ de " + placeLabel(TF.from) + " vers " + placeLabel(TF.to) + " (frais du pont " + fmtMoney(res.fee) + " $). " + (res.pending ? fmtMoney(res.received) + " $ d'USDC" + (res.drop > 0 ? " + " + fmtMoney(res.drop) + " $ de gas" : "") + " arriveront dans " + fmtCountdown(res.secs * 1000) + "." : "Arrivée immédiate (mode instantané)."); WAL.tfMsgOk = true; TF.amount = ""; TF.drop = ""; save(); }
     renderWallet();
   });
   var mx = h("button", {type:"button", class:"btn small", onclick:function(){ TF.amount = String(Math.floor((p.bal[TF.from] || 0) * 100) / 100); renderWallet(); }, text:"Tout le solde"});
@@ -2945,6 +3033,14 @@ function renderOptions(){
   root.textContent = "";
   var cur = themeNow();
   root.appendChild(h("section", {class:"panel"}, [
+    h("h2", {style:"margin:0; font-size:1.05rem", text:"Bridges simulés"}),
+    h("div", {class:"subtabs", role:"group", "aria-label":"Durée des bridges"}, [[false, "Durée réelle"], [true, "Instantané"]].map(function(t){
+      var on = !!state.instantBridge === t[0];
+      return h("button", {type:"button", class:on ? "sel" : "", "aria-pressed":String(on), onclick:function(){ state.instantBridge = t[0]; save(); renderOptions(); }, text:t[1]});
+    })),
+    h("p", {class:"note", text:"« Durée réelle » : les fonds quittent la blockchain de départ tout de suite et n'arrivent qu'après la durée du pont choisi (8 secondes pour Across, ≈ 16 minutes pour CCTP…). Les transferts en cours continuent même si tu fermes l'appli."})
+  ]));
+  root.appendChild(h("section", {class:"panel"}, [
     h("h2", {style:"margin:0; font-size:1.05rem", text:"Apparence"}),
     h("div", {class:"subtabs", role:"group", "aria-label":"Thème"}, [["auto", "Automatique"], ["light", "Mode clair"], ["dark", "Mode sombre"]].map(function(t){
       return h("button", {type:"button", class:cur === t[0] ? "sel" : "", "aria-pressed":String(cur === t[0]), onclick:function(){ applyTheme(t[0]); renderOptions(); }, text:t[1]});
@@ -3023,6 +3119,8 @@ function renderPump(){
 }
 
 applyTheme(themeNow() === "auto" ? null : themeNow());
+paperSettle(state.paper, Date.now()); save();   // arrivées pendant que l'appli était fermée
+setInterval(pendTick, 1000);
 render();
 refresh();
 // après un rechargement de la page, on reste dans l'onglet où on était
