@@ -231,9 +231,13 @@ function estimateCost(o){
   var amt = o.amount > 0 ? o.amount : 0, parts = {};
   var chg = Math.abs(o.chg24 || 0);
   if(o.dex){
-    parts.fee = 0.3;
-    parts.spread = 0;
-    parts.impact = o.liquidity > 0 ? Math.min(50, 200 * amt / o.liquidity) : 5;
+    if(o.swapPct != null){   // coût réel d'échange (frais du pool + impact) donné par un devis d'agrégateur en direct
+      parts.fee = 0; parts.spread = 0; parts.impact = Math.max(0, Math.min(50, o.swapPct)); parts.swapLive = true;
+    } else {
+      parts.fee = 0.3;
+      parts.spread = 0;
+      parts.impact = o.liquidity > 0 ? Math.min(50, 200 * amt / o.liquidity) : 5;
+    }
     var gas = o.gasUsd != null ? o.gasUsd : (GAS_USD[o.chain] != null ? GAS_USD[o.chain] : 0.5);
     parts.gasUsd = gas; parts.gasLive = o.gasUsd != null;
     parts.gas = amt > 0 ? Math.min(50, gas / amt * 100) : 0;
@@ -672,17 +676,87 @@ function refreshGas(extra){
     }));
   }).catch(function(){}).then(function(){ gasBusy = false; render(); });
 }
-function orderCost(t, amountUsd){
+/* ----- Devis d'échange en direct pour les jetons décentralisés (Jupiter sur Solana, ParaSwap sur les blockchains EVM) -----
+   Coût effectif = écart entre le prix obtenu avec la route réelle et le prix du marché, donc frais du pool + impact inclus. */
+var PARA_NET = {ethereum:1, bsc:56, polygon:137, avalanche:43114, arbitrum:42161, optimism:10, base:8453};
+var SWAPQ = {data:{}, busy:false, timer:null};
+function tokenDecimals(t){
+  if(t.dex.dec != null) return Promise.resolve(t.dex.dec);
+  var ch = t.dex.chain, g = GAS_CHAINS[ch];
+  if(!g) return Promise.reject(new Error("chain"));
+  var p = ch === "solana"
+    ? rpcCall(g.rpc, "getTokenSupply", [t.dex.addr]).then(function(r){ return r && r.value && r.value.decimals; })
+    : rpcCall(g.rpc, "eth_call", [{to:t.dex.addr, data:"0x313ce567"}, "latest"]).then(function(h){ return parseInt(h, 16); });
+  return p.then(function(d){
+    if(!(d >= 0 && d <= 30)) throw new Error("dec");
+    t.dex.dec = d; save(); return d;
+  });
+}
+function swapKey(t, side, amt){ return t.id + "|" + side + "|" + Math.round(amt); }
+function swapLive(t, side, amt){
+  var q = SWAPQ.data[swapKey(t, side, amt)];
+  return (q && q.ok && Date.now() - q.t < 120000) ? q : null;
+}
+function fetchSwapQuote(t, side, amt, price){
+  var ch = t.dex.chain, key = swapKey(t, side, amt);
+  var usdc = USDC_ADDR[ch];
+  if(!usdc || !t.dex.addr || !(price > 0) || !(amt > 0)) return Promise.reject(new Error("unsupported"));
+  return tokenDecimals(t).then(function(dec){
+    var usdcDec = ch === "bsc" ? 18 : 6;
+    var inMint = side === "buy" ? usdc : t.dex.addr, outMint = side === "buy" ? t.dex.addr : usdc;
+    var inDec = side === "buy" ? usdcDec : dec, outDec = side === "buy" ? dec : usdcDec;
+    var inAmt = side === "buy" ? amt : amt / price;
+    var units = BigInt(Math.round(inAmt * 1e6)) * (BigInt(10) ** BigInt(inDec)) / BigInt(1000000);
+    var req;
+    if(ch === "solana"){
+      req = extApi("https://lite-api.jup.ag/swap/v1", "Jupiter", "/quote?inputMint=" + inMint + "&outputMint=" + outMint + "&amount=" + units.toString() + "&slippageBps=100")
+        .then(function(j){ return {out: parseFloat(j.outAmount), gas:null}; });
+    } else {
+      var net = PARA_NET[ch];
+      if(!net) throw new Error("net");
+      req = extApi("https://api.paraswap.io", "ParaSwap", "/prices?srcToken=" + inMint + "&srcDecimals=" + inDec + "&destToken=" + outMint + "&destDecimals=" + outDec +
+        "&amount=" + units.toString() + "&side=SELL&network=" + net)
+        .then(function(j){ var r = j && j.priceRoute; return {out: r ? parseFloat(r.destAmount) : NaN, gas: r && parseFloat(r.gasCostUSD) > 0 ? parseFloat(r.gasCostUSD) : null}; });
+    }
+    return req.then(function(r){
+      var out = r.out / Math.pow(10, outDec);
+      if(!(out > 0)) throw new Error("out");
+      var pct = side === "buy" ? (amt / out / price - 1) * 100 : (1 - out / amt) * 100;
+      if(!(pct > -5 && pct < 60)) throw new Error("insane");
+      SWAPQ.data[key] = {ok:true, t:Date.now(), pct:Math.max(0, pct), gas:r.gas};
+    });
+  });
+}
+function scheduleSwapQuote(t, side, amt, done){
+  if(!t.dex || !(amt > 0)) return;
+  var key = swapKey(t, side, amt), q = SWAPQ.data[key];
+  if(q && Date.now() - q.t < (q.ok ? 20000 : 60000)) return;
+  clearTimeout(SWAPQ.timer);
+  SWAPQ.timer = setTimeout(function(){
+    var d = data[t.id], price = d && d.current_price;
+    if(SWAPQ.busy) return;
+    SWAPQ.busy = true;
+    fetchSwapQuote(t, side, amt, price).catch(function(){ SWAPQ.data[key] = {ok:false, t:Date.now()}; })
+      .then(function(){ SWAPQ.busy = false; if(done) done(); });
+  }, 500);
+}
+function orderCost(t, amountUsd, side){
   var p = state.paper, d = t.id ? data[t.id] : null;
   if(p.feeMode === "fixed" || !d) return {pct:p.fee, fixed:true, parts:null};
+  var sq = d.dex ? swapLive(t, side || "buy", amountUsd) : null;
   return estimateCost({amount:amountUsd, dex:!!d.dex, liquidity:d.liquidity_usd, volume:d.total_volume,
-    chg24:d.price_change_percentage_24h, chain:d.chain, gasUsd: d.dex ? gasUsdFor(d.chain) : null});
+    chg24:d.price_change_percentage_24h, chain:d.chain, gasUsd: d.dex ? ((sq && sq.gas != null) ? sq.gas : gasUsdFor(d.chain)) : null,
+    swapPct: sq ? sq.pct : null});
 }
 function costText(c){
   if(c.fixed) return "frais et écart simulés (fixes) : " + c.pct + " %";
-  var P = c.parts, f = function(x){ return (Math.round(x * 100) / 100) + " %"; }, out = ["frais " + f(P.fee)];
-  if(P.spread) out.push("écart " + f(P.spread));
-  out.push("impact sur le prix " + f(P.impact));
+  var P = c.parts, f = function(x){ return (Math.round(x * 100) / 100) + " %"; }, out = [];
+  if(P.swapLive){ out.push("échange " + f(P.impact) + " (devis en direct : frais du pool + impact)"); }
+  else {
+    out.push("frais " + f(P.fee));
+    if(P.spread) out.push("écart " + f(P.spread));
+    out.push("impact sur le prix " + f(P.impact) + " (estimation)");
+  }
   if(P.gas) out.push("réseau " + f(P.gas) + " (gas ≈ " + (P.gasUsd < 0.1 ? P.gasUsd.toFixed(3) : P.gasUsd.toFixed(2)) + " $" + (P.gasLive ? ", en direct" : ", valeur moyenne") + ")");
   out.push("volatilité " + f(P.vol));
   return "coût estimé " + c.pct + " % (" + out.join(" · ") + ")";
@@ -705,7 +779,7 @@ function runAutomation(){
     if(!price) return;
     var r = getRules(t);
     if(r.sl.on && stopLossTrigger(p.pos[t.id], price, r.sl.pct)){
-      var res = paperSell(p, t.id, 1, price, orderCost(t, p.pos[t.id].qty * price).pct);
+      var res = paperSell(p, t.id, 1, price, orderCost(t, p.pos[t.id].qty * price, "sell").pct);
       if(res.ok){
         p.log[0].auto = "stop loss";
         r.sl.on = false; changed = true;
@@ -1109,6 +1183,7 @@ function tradePanel(t, d){
 
   function updatePreview(){
     var fr = buy ? ts.fraction : sellFrac();
+    if(t.dex) scheduleSwapQuote(t, buy ? "buy" : "sell", buy ? buySpend() : pos.qty * fr * price, updatePreview);
     if(buy){
       var spend = buySpend();
       if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
@@ -1119,7 +1194,7 @@ function tradePanel(t, d){
         " · coûts simulés ≈ " + fmtMoney(fee) + " " + cur + " (" + costText(cb) + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur;
     } else {
       var gross = pos.qty * fr * price;
-      var cs = orderCost(t, gross);
+      var cs = orderCost(t, gross, "sell");
       var feeS = gross * cs.pct / 100;
       var pnl = gross - feeS - pos.cost * fr;
       preview.textContent = "Vente de " + fmtQty(pos.qty * fr) + " " + t.sym + " ≈ " + fmtMoney(gross - feeS) + " " + cur +
@@ -1183,7 +1258,7 @@ function tradePanel(t, d){
         if(!r.ok){ showErr(r.msg); return; }
         done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(spend) + " " + cur + ".");
       } else {
-        var rs = paperSell(p, t.id, sellFrac(), price, orderCost(t, pos.qty * sellFrac() * price).pct);
+        var rs = paperSell(p, t.id, sellFrac(), price, orderCost(t, pos.qty * sellFrac() * price, "sell").pct);
         if(!rs.ok){ showErr(rs.msg); return; }
         done("Vente simulée : " + fmtMoney(rs.net) + " " + cur + " reçus (résultat " + (rs.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(rs.pnl)) + " " + cur + ").");
       }
