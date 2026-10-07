@@ -126,7 +126,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
 .brbest .big{font-size:1.15rem; font-weight:600}
 .brlist{margin:0; padding:0; list-style:none; display:flex; flex-direction:column; gap:6px}
 .brlist li{border:1px solid var(--line); border-radius:8px; padding:8px 10px; display:flex; justify-content:space-between; gap:10px; font-size:.88rem; align-items:center}
-.brlist li button{border:0; background:none; text-align:left; padding:0; color:inherit; font:inherit; width:100%; display:flex; justify-content:space-between; gap:10px}
+.brlist li button{border:0; background:none; cursor:pointer; text-align:left; padding:0; color:inherit; font:inherit; width:100%; display:flex; justify-content:space-between; gap:10px}
 .brlist .mono{font-family:var(--mono); white-space:nowrap}
 .note{font-size:.8rem; color:var(--muted); margin:0}
 .empty{background:var(--surface); border:1px dashed var(--line); border-radius:10px; padding:18px; color:var(--muted); text-align:center}
@@ -336,7 +336,7 @@ var DEFAULT = {
   cur: "usd",
   interval: 60,
   exchange: "none",
-  bridge: {from:"base", to:"solana", amount:300},
+  bridge: {from:"base", to:"solana", amount:300, pick:"auto"},
   paper: newPaper("usd", 300),
   tokens: [
     {sym:"MAGIC", id:"magic", alerts:mkAlerts()},
@@ -371,6 +371,7 @@ function load(){
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
   if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
   if(!(s.bridge.amount > 0)) s.bridge.amount = 300;
+  if(typeof s.bridge.pick !== "string") s.bridge.pick = "auto";
   // Tout est désormais en dollars. Les anciens réglages en CHF (simulation, seuils de prix) sont remis à zéro.
   if(s.cur !== "usd" || s.paper.cur !== "usd"){
     s.cur = "usd";
@@ -1880,6 +1881,9 @@ function lifiTick(){
     var ta = (LQ.data[a.k + "|" + rk] || {t:0}).t, tb = (LQ.data[b.k + "|" + rk] || {t:0}).t;
     return ta - tb;
   });
+  // Le pont choisi à la main est actualisé en priorité, dès que son devis a plus de 15 s
+  var chosen = cands.filter(function(b){ return b.k === B.pick; })[0];
+  if(chosen && Date.now() - (LQ.data[chosen.k + "|" + rk] || {t:0}).t > 15000) cands.unshift(chosen);
   LQ.lifiBusy = true;
   return fetchLifi(cands[0]).then(function(){ LQ.lifiBusy = false; }, function(){ LQ.lifiBusy = false; });
 }
@@ -1920,7 +1924,7 @@ function renderBridge(){
   function chainSel(id, value, onchange){
     var sel = h("select", {id:id}, Object.keys(BR_CHAINS).map(function(k){ return h("option", {value:k, text:BR_CHAINS[k].label}); }));
     sel.value = value;
-    sel.addEventListener("change", function(){ onchange(sel.value); });
+    sel.addEventListener("change", function(){ sel.blur(); onchange(sel.value); });
     return sel;
   }
   var amt = h("input", {id:"br-amt", type:"text", inputmode:"decimal", value:String(B.amount), autocomplete:"off"});
@@ -1948,15 +1952,29 @@ function renderBridge(){
   if(!pk){
     kids.push(h("p", {class:"note", text:"Aucun pont de ma liste ne relie ces deux blockchains. Essaie un agrégateur comme Jumper ou passe par une bourse."}));
   } else {
-    var b = pk.best;
-    var why = pk.reason === "speed"
+    var manual = (B.pick && B.pick !== "auto") ? pk.list.filter(function(x){ return x.b.k === B.pick; })[0] : null;
+    var b = manual || pk.best;
+    function choosePick(k){
+      B.pick = k; save(); renderBridge();
+      if(k !== "across") lifiTick().then(function(){ if(bridgeActive()) renderBridge(); });
+    }
+    var pickSel = h("select", {id:"br-pick"}, [h("option", {value:"auto", text:"Automatique (recommandé : " + pk.best.b.name + ")"})].concat(
+      pk.list.map(function(x){ return h("option", {value:x.b.k, text:x.b.name + " · " + fmtMoney(x.cost) + " $ · " + fmtDuration(x.time) + (x.live ? " · en direct" : " · estimation")}); })));
+    pickSel.value = manual ? manual.b.k : "auto";
+    pickSel.addEventListener("change", function(){ pickSel.blur(); choosePick(pickSel.value); });
+    kids.push(h("label", {class:"field", for:"br-pick"}, ["Pont utilisé", pickSel]));
+    var why = manual
+      ? "Choix manuel." + (manual === pk.best ? " C'est aussi le pont que la règle automatique recommande."
+          : " La règle automatique recommanderait " + pk.best.b.name + " (" + fmtMoney(pk.best.cost) + " $, " + fmtDuration(pk.best.time) + ") ; ton choix coûte " +
+            (manual.cost >= pk.best.cost ? "+" : "−") + fmtMoney(Math.abs(manual.cost - pk.best.cost)) + " $ et prend " + fmtDuration(manual.time) + ".")
+      : pk.reason === "speed"
       ? "Choisi : au moins 20 % plus rapide que le moins cher (" + pk.cheapest.b.name + ", " + fmtDuration(pk.cheapest.time) + ") pour un surcoût de seulement " +
         ((b.cost / pk.cheapest.cost - 1) * 100).toFixed(1) + " %."
       : "Choisi : le moins cher" + (pk.list.length > 1
           ? ((B.from === "ethereum" || B.to === "ethereum") ? ". Ethereum est concerné : le prix prime toujours sur la vitesse."
             : ". Aucun autre pont n'est à la fois plus de 20 % plus rapide et moins de 10 % plus cher.") : ".");
     kids.push(h("div", {class:"brbest"}, [
-      h("div", {class:"note", text:"Pont recommandé"}),
+      h("div", {class:"note", text: manual ? "Pont choisi (manuel)" : "Pont recommandé"}),
       h("div", {class:"big", text:b.b.name}),
       h("div", {text:"Coût total ≈ " + fmtMoney(b.cost) + " $ (" + b.pct.toFixed(2) + " %) · frais du pont " + fmtMoney(b.fee) + " $ + gas de départ " + fmtMoney(b.gas) + " $"}),
       h("div", {text:"Durée " + fmtDuration(b.time) + " · tu reçois ≈ " + fmtMoney(Math.max(0, B.amount - b.cost)) + " $"}),
@@ -1969,13 +1987,14 @@ function renderBridge(){
       target:"_blank", rel:"noopener noreferrer", text:"Comparer sur Jumper ↗"}));
     kids.push(h("div", {class:"acts"}, links));
     if(!b.b.url) kids.push(h("p", {class:"note", text:"CCTP n'a pas d'interface officielle : utilise un portefeuille ou un agrégateur compatible (Jumper)."}));
-    kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (du moins cher au plus cher)"}));
+    kids.push(h("h3", {style:"margin:6px 0 0; font-size:.95rem", text:"Tous les ponts pour ce trajet (touche une ligne pour le choisir)"}));
     kids.push(h("ul", {class:"brlist"}, pk.list.map(function(x){
-      return h("li", {}, [
-        h("span", {text:x.b.name + (x === pk.best ? " ✓" : "") + (x.live ? " · en direct" : " · estimation")}),
+      return h("li", {}, [h("button", {type:"button", "aria-pressed":String(x === b), onclick:function(){ choosePick(x.b.k); }}, [
+        h("span", {text:(x === b ? "✓ " : "") + x.b.name + (x === pk.best ? " (recommandé)" : "") + (x.live ? " · en direct" : " · estimation")}),
         h("span", {class:"mono", text:fmtMoney(x.cost) + " $ · " + x.pct.toFixed(2) + " % · " + fmtDuration(x.time)})
-      ]);
+      ])]);
     })));
+    if(manual) kids.push(h("div", {}, [h("button", {type:"button", class:"btn small", onclick:function(){ choosePick("auto"); }, text:"Revenir au choix automatique"})]));
   }
   kids.push(h("p", {class:"note", text: LQ.lastUpdate ? "Devis actualisés à " + timeStr(LQ.lastUpdate) + " (Across toutes les 10 s, les autres ponts à tour de rôle toutes les 40 s)." : "Devis en cours de chargement…"}));
   root.appendChild(h("section", {class:"panel"}, kids));
