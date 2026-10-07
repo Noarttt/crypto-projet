@@ -618,14 +618,18 @@ function tradePanel(t, d){
   var preview = h("p", {class:"note", text:""});
   var err = h("p", {class:"banner err", hidden:"hidden", text:""});
   function showErr(msg){ err.textContent = msg; err.hidden = false; }
-  function done(msg){ setFlash(msg, "ok"); save(); render(); }
+  function done(msg){ setFlash(msg, "ok"); ts.amount = null; save(); render(); }
 
   function spendFor(fr){ return Math.min(p.cash, Math.round(p.cash * fr * 100) / 100); }
+  function manualAmt(){ var v = numOrNull(amtInput.value); return (v && v > 0) ? v : null; }
+  // Montant effectif (achat) et part effective (vente), selon saisie manuelle ou pourcentage
+  function buySpend(){ var m = manualAmt(); return m ? Math.min(p.cash, Math.round(m * 100) / 100) : spendFor(ts.fraction); }
+  function sellFrac(){ var m = manualAmt(); return m ? Math.min(1, m / (pos.qty * price)) : ts.fraction; }
 
   function updatePreview(){
-    var fr = ts.fraction;
+    var fr = buy ? ts.fraction : sellFrac();
     if(buy){
-      var spend = spendFor(fr);
+      var spend = buySpend();
       if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
       var fee = spend * p.fee / 100;
       var qty = (spend - fee) / price;
@@ -640,6 +644,17 @@ function tradePanel(t, d){
     }
   }
 
+  var amtInput = h("input", {id:"amt-" + t.sym, type:"text", inputmode:"decimal", placeholder:"ou saisis un montant", autocomplete:"off",
+    value: ts.amount == null ? "" : String(ts.amount)});
+  amtInput.addEventListener("input", function(){
+    ts.amount = amtInput.value;
+    var m = manualAmt();
+    if(m) pctLabel.textContent = buy ? "Montant saisi : " + fmtMoney(buySpend()) + " " + cur + (m > p.cash ? " (limité au solde simulé)" : "")
+      : "Montant saisi : " + fmtMoney(Math.min(m, pos.qty * price)) + " " + cur + (m > pos.qty * price ? " (limité à la valeur de la position)" : "");
+    else pctLabel.textContent = pctText(Math.round(ts.fraction * 100));
+    bigBtns.forEach(function(x){ x.b.classList.toggle("sel", !m && x.pc === Math.round(ts.fraction * 100)); });
+    updatePreview();
+  });
   var slider = h("input", {id:(buy ? "buy-" : "sell-") + t.sym, type:"range", min:"5", max:"100", step:"5",
     value:String(Math.round(ts.fraction * 100)),
     "aria-label": buy ? "Part du solde à investir, par tranche de 5 %" : "Part de la position à vendre, par tranche de 5 %"});
@@ -649,9 +664,11 @@ function tradePanel(t, d){
     ts.fraction = v / 100;
     bigBtns.forEach(function(x){ x.b.classList.toggle("sel", x.pc === v); });
     slider.value = String(v);
-    pctLabel.textContent = (buy ? "Part du solde à investir : " + v + " % du solde simulé" : "Part à vendre : " + v + " % de la position") + " (par tranche de 5 %)";
+    ts.amount = null; amtInput.value = "";
+    pctLabel.textContent = pctText(v);
     updatePreview();
   };
+  function pctText(v){ return (buy ? "Part du solde à investir : " + v + " % du solde simulé" : "Part à vendre : " + v + " % de la position") + " (par tranche de 5 %)"; }
   slider.addEventListener("input", function(){ setPct(Number(slider.value)); });
   var bigs = h("div", {class:"presets big"}, [25, 50, 75, 100].map(function(pc){
     var b = h("button", {type:"button", class:"btn big", onclick:function(){ setPct(pc); }, text: pc === 100 ? "All in" : pc + " %"});
@@ -660,27 +677,30 @@ function tradePanel(t, d){
   }));
   var minus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(ts.fraction * 100 - 5); }, text:"−5 %"});
   var plus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(ts.fraction * 100 + 5); }, text:"+5 %"});
+  var keepAmt = ts.amount;
   setPct(ts.fraction * 100);
+  if(keepAmt){ ts.amount = keepAmt; amtInput.value = String(keepAmt); amtInput.dispatchEvent(new Event("input")); }
 
   var sideRow = h("div", {class:"presets big side"}, [
-    h("button", {type:"button", class:"btn big" + (buy ? " sel" : ""), onclick:function(){ ts.side = "buy"; render(); }, text:"Acheter"}),
-    h("button", {type:"button", class:"btn big" + (!buy ? " sel" : ""), disabled: pos ? null : "disabled", onclick:function(){ ts.side = "sell"; render(); }, text:"Vendre"})
+    h("button", {type:"button", class:"btn big" + (buy ? " sel" : ""), onclick:function(){ ts.side = "buy"; ts.amount = null; render(); }, text:"Acheter"}),
+    h("button", {type:"button", class:"btn big" + (!buy ? " sel" : ""), disabled: pos ? null : "disabled", onclick:function(){ ts.side = "sell"; ts.amount = null; render(); }, text:"Vendre"})
   ]);
   box.appendChild(sideRow);
   box.appendChild(bigs);
   box.appendChild(pctLabel);
   box.appendChild(h("div", {class:"slider"}, [minus, slider, plus]));
+  box.appendChild(h("label", {for:"amt-" + t.sym}, [buy ? "Montant à investir (" + cur + ")" : "Montant à vendre (" + cur + ")", amtInput]));
   box.appendChild(preview);
   box.appendChild(err);
   box.appendChild(h("div", {class:"acts"}, [
     h("button", {type:"button", class:"btn primary small", onclick:function(){
       if(buy){
-        var spend = spendFor(ts.fraction);
+        var spend = buySpend();
         var r = paperBuy(p, t.id, t.sym, spend, price);
         if(!r.ok){ showErr(r.msg); return; }
         done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(spend) + " " + cur + ".");
       } else {
-        var rs = paperSell(p, t.id, ts.fraction, price);
+        var rs = paperSell(p, t.id, sellFrac(), price);
         if(!rs.ok){ showErr(rs.msg); return; }
         done("Vente simulée : " + fmtMoney(rs.net) + " " + cur + " reçus (résultat " + (rs.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(rs.pnl)) + " " + cur + ").");
       }
