@@ -217,7 +217,8 @@ function estimateCost(o){
     parts.fee = 0.3;
     parts.spread = 0;
     parts.impact = o.liquidity > 0 ? Math.min(50, 200 * amt / o.liquidity) : 5;
-    var gas = GAS_USD[o.chain] != null ? GAS_USD[o.chain] : 0.5;
+    var gas = o.gasUsd != null ? o.gasUsd : (GAS_USD[o.chain] != null ? GAS_USD[o.chain] : 0.5);
+    parts.gasUsd = gas; parts.gasLive = o.gasUsd != null;
     parts.gas = amt > 0 ? Math.min(50, gas / amt * 100) : 0;
     parts.vol = Math.min(3, chg * 0.03);
   } else {
@@ -508,6 +509,7 @@ function refresh(){
     });
   }).then(function(){
     lastOk = Date.now(); failCount = 0; lastError = null;
+    refreshGas();
     rememberLastPrices();
     runAutomation();
     evaluateAlerts();
@@ -538,18 +540,73 @@ function rememberLastPrices(){
   });
   if(changed) save();
 }
+/* ---------- Prix du gas en direct (réseaux des échanges décentralisés) ---------- */
+var GAS_CHAINS = {
+  ethereum:{rpc:"https://ethereum-rpc.publicnode.com", coin:"ethereum", units:180000},
+  bsc:{rpc:"https://bsc-rpc.publicnode.com", coin:"binancecoin", units:180000},
+  base:{rpc:"https://base-rpc.publicnode.com", coin:"ethereum", units:180000},
+  arbitrum:{rpc:"https://arbitrum-one-rpc.publicnode.com", coin:"ethereum", units:600000},
+  optimism:{rpc:"https://optimism-rpc.publicnode.com", coin:"ethereum", units:180000},
+  polygon:{rpc:"https://polygon-bor-rpc.publicnode.com", coin:"polygon-ecosystem-token", alt:"matic-network", units:180000},
+  avalanche:{rpc:"https://avalanche-c-chain-rpc.publicnode.com/ext/bc/C/rpc", coin:"avalanche-2", units:180000},
+  solana:{sol:true, rpc:"https://api.mainnet-beta.solana.com", coin:"solana"}
+};
+var GAS = {};            // chaîne -> {usd, t, detail}
+var gasBusy = false;
+function rpcCall(url, method, params){
+  var ctrl = new AbortController();
+  var to = setTimeout(function(){ ctrl.abort(); }, 10000);
+  return fetch(url, {method:"POST", signal:ctrl.signal, headers:{"content-type":"application/json"},
+    body:JSON.stringify({jsonrpc:"2.0", id:1, method:method, params:params || []})})
+    .then(function(r){ clearTimeout(to); if(!r.ok) throw new Error("http " + r.status); return r.json(); },
+      function(e){ clearTimeout(to); throw e; })
+    .then(function(j){ if(j.error) throw new Error("rpc"); return j.result; });
+}
+function gasFresh(chain){ var g = GAS[chain]; return g && Date.now() - g.t < 120000; }
+function gasUsdFor(chain){ var g = GAS[chain]; return (g && Date.now() - g.t < 900000) ? g.usd : null; }
+function refreshGas(){
+  if(gasBusy) return;
+  var chains = [];
+  state.tokens.forEach(function(t){
+    if(t.dex && GAS_CHAINS[t.dex.chain] && chains.indexOf(t.dex.chain) < 0 && !gasFresh(t.dex.chain)) chains.push(t.dex.chain);
+  });
+  if(!chains.length) return;
+  gasBusy = true;
+  var ids = [];
+  chains.forEach(function(c){ var g = GAS_CHAINS[c]; [g.coin, g.alt].forEach(function(x){ if(x && ids.indexOf(x) < 0) ids.push(x); }); });
+  api("/simple/price?ids=" + encodeURIComponent(ids.join(",")) + "&vs_currencies=usd").then(function(px){
+    return Promise.all(chains.map(function(c){
+      var g = GAS_CHAINS[c];
+      var usd = (px[g.coin] && px[g.coin].usd) || (g.alt && px[g.alt] && px[g.alt].usd);
+      if(!(usd > 0)) return null;
+      if(g.sol){
+        return rpcCall(g.rpc, "getRecentPrioritizationFees", []).then(function(res){
+          var fees = (res || []).map(function(x){ return x.prioritizationFee; }).filter(function(x){ return x > 0; }).sort(function(a, b){ return a - b; });
+          var med = fees.length ? fees[Math.floor(fees.length / 2)] : 0;          // micro-lamports par unité de calcul
+          var lamports = 5000 + med * 200000 / 1e6;                                 // frais de base + priorité (≈ 200 000 unités)
+          GAS[c] = {usd: lamports / 1e9 * usd, t:Date.now(), detail: Math.round(lamports) + " lamports"};
+        }).catch(function(){});
+      }
+      return rpcCall(g.rpc, "eth_gasPrice", []).then(function(hex){
+        var wei = parseInt(hex, 16);
+        if(!(wei > 0)) return;
+        GAS[c] = {usd: wei * g.units / 1e18 * usd, t:Date.now(), detail: (wei / 1e9).toFixed(wei < 1e8 ? 4 : 2) + " gwei"};
+      }).catch(function(){});
+    }));
+  }).catch(function(){}).then(function(){ gasBusy = false; render(); });
+}
 function orderCost(t, amountUsd){
   var p = state.paper, d = t.id ? data[t.id] : null;
   if(p.feeMode === "fixed" || !d) return {pct:p.fee, fixed:true, parts:null};
   return estimateCost({amount:amountUsd, dex:!!d.dex, liquidity:d.liquidity_usd, volume:d.total_volume,
-    chg24:d.price_change_percentage_24h, chain:d.chain});
+    chg24:d.price_change_percentage_24h, chain:d.chain, gasUsd: d.dex ? gasUsdFor(d.chain) : null});
 }
 function costText(c){
   if(c.fixed) return "frais et écart simulés (fixes) : " + c.pct + " %";
   var P = c.parts, f = function(x){ return (Math.round(x * 100) / 100) + " %"; }, out = ["frais " + f(P.fee)];
   if(P.spread) out.push("écart " + f(P.spread));
   out.push("impact sur le prix " + f(P.impact));
-  if(P.gas) out.push("réseau " + f(P.gas));
+  if(P.gas) out.push("réseau " + f(P.gas) + " (gas ≈ " + (P.gasUsd < 0.1 ? P.gasUsd.toFixed(3) : P.gasUsd.toFixed(2)) + " $" + (P.gasLive ? ", en direct" : ", valeur moyenne") + ")");
   out.push("volatilité " + f(P.vol));
   return "coût estimé " + c.pct + " % (" + out.join(" · ") + ")";
 }
