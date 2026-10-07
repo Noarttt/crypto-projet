@@ -607,6 +607,7 @@ function alertField(t, key, label, value){
 
 /* ----- Graphique : périodes (1 h, 24 h, 7 j, 1 mois, 1 an, tout) ----- */
 var RANGES = [
+  {k:"live", label:"Live 1 s", live:true},
   {k:"1h",   label:"1 h",   days:1,     cut:3600},
   {k:"24h",  label:"24 h",  days:1},
   {k:"7j",   label:"7 j",   days:7},
@@ -616,7 +617,7 @@ var RANGES = [
 ];
 // période choisie : t.range sur chaque jeton (conservée dans le stockage local, défaut "7j")
 var chartCache = {};    // id|période -> {t, prices, err}
-function rangeOf(k){ for(var i = 0; i < RANGES.length; i++) if(RANGES[i].k === k) return RANGES[i]; return RANGES[2]; }
+function rangeOf(k){ var f = null; for(var i = 0; i < RANGES.length; i++){ if(RANGES[i].k === k) return RANGES[i]; if(RANGES[i].k === "7j") f = RANGES[i]; } return f; }
 function downsample(a, n){
   if(a.length <= n) return a;
   var out = [];
@@ -642,11 +643,84 @@ function loadChart(id, rg){
       render();
     });
 }
+/* Flux en direct (une valeur par seconde) via le WebSocket public de Binance, paire SYMBOLE/USDT.
+   Fonctionne uniquement pour les jetons cotés sur Binance ; sinon un message l'indique. */
+var LIVE = {ws:null, key:"", buf:{}, last:{}, els:{}, since:0};
+function liveSyms(){
+  var o = {};
+  state.tokens.forEach(function(t){ if(t.range === "live") o[t.sym.toLowerCase().replace(/[^a-z0-9]/g, "")] = 1; });
+  return Object.keys(o).sort();
+}
+function liveFill(sym){
+  var el = LIVE.els[sym];
+  if(!el) return;
+  var b = LIVE.buf[sym.toUpperCase()] || [];
+  var prices = b.map(function(x){ return x[1]; });
+  var chg = (prices.length > 1 && prices[0] > 0) ? (prices[prices.length - 1] / prices[0] - 1) * 100 : null;
+  while(el.firstChild) el.removeChild(el.firstChild);
+  el.appendChild(sparkline(prices, dir(chg), "direct (1 s)"));
+  var msg;
+  if(prices.length){
+    msg = h("div", {class:"note"}, ["Direct Binance (" + sym.toUpperCase() + "/USDT) : " + fmtPrice(prices[prices.length - 1]) + " USD · " + prices.length + " points (≈ " + prices.length + " s)" + (chg != null ? " · " : ""),
+      chg != null ? h("b", {class:dir(chg), text:fmtPct(chg)}) : null]);
+  } else if(LIVE.since && Date.now() - LIVE.since > 8000){
+    msg = h("div", {class:"note", text:"Aucun flux en direct pour " + sym.toUpperCase() + " : ce jeton n'est probablement pas coté en USDT sur Binance. Choisis une autre période."});
+  } else {
+    msg = h("div", {class:"note", text:"Connexion au flux en direct…"});
+  }
+  el.appendChild(msg);
+}
+function liveAll(){ Object.keys(LIVE.els).forEach(liveFill); }
+function syncLive(){
+  var syms = liveSyms(), key = syms.join(",");
+  if(key === LIVE.key && (LIVE.ws || !key)) return;
+  if(LIVE.ws){ var old = LIVE.ws; LIVE.ws = null; try{ old.close(); }catch(e){} }
+  LIVE.key = key;
+  if(!key || typeof WebSocket === "undefined") return;
+  var ws;
+  try{
+    ws = new WebSocket("wss://stream.binance.com:9443/stream?streams=" + syms.map(function(x){ return x + "usdt@trade"; }).join("/"));
+  }catch(e){ return; }
+  LIVE.ws = ws;
+  LIVE.since = Date.now();
+  setTimeout(liveAll, 8500);
+  ws.onmessage = function(ev){
+    var m; try{ m = JSON.parse(ev.data); }catch(e){ return; }
+    var d = m && m.data;
+    if(!d || !d.s) return;
+    var base = d.s.replace(/USDT$/, "");
+    var now = Date.now(), px = parseFloat(d.p);
+    if(!(px > 0) || now - (LIVE.last[base] || 0) < 1000) return;
+    LIVE.last[base] = now;
+    var b = LIVE.buf[base] || (LIVE.buf[base] = []);
+    b.push([now, px]);
+    if(b.length > 600) b.shift();
+    liveFill(base.toLowerCase());
+  };
+  ws.onclose = function(){
+    if(LIVE.ws === ws){ LIVE.ws = null; setTimeout(syncLive, 3000); }
+  };
+  ws.onerror = function(){ try{ ws.close(); }catch(e){} };
+}
 function chartBlock(t, d){
   var k = t.range || "7j";
   if(rangeOf(k).k !== k) k = "7j";
   var rg = rangeOf(k);
   var prices, note = "", stat = null;
+  if(rg.live){
+    var symk = t.sym.toLowerCase().replace(/[^a-z0-9]/g, "");
+    var box = h("div", {class:"chartbox"}, []);
+    var live = h("div", {class:"chartbox"}, []);
+    LIVE.els[symk] = live;
+    var rb = RANGES.map(function(r){
+      return h("button", {type:"button", class:"btn small" + (r.k === k ? " sel" : ""), "aria-pressed":String(r.k === k),
+        onclick:function(){ t.range = r.k; save(); render(); }, text:r.label});
+    });
+    box.appendChild(h("div", {class:"ranges"}, rb));
+    box.appendChild(live);
+    liveFill(symk);
+    return box;
+  }
   if(k === "7j"){
     prices = d.sparkline_in_7d && d.sparkline_in_7d.price;
   } else {
@@ -1061,6 +1135,7 @@ function render(){
   }
   renderExchange();
   renderNotifRow();
+  syncLive();
 }
 
 /* ---------- Ajout de jetons ---------- */
