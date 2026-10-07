@@ -53,6 +53,11 @@ button{cursor:pointer}
 .seg{display:inline-flex; border:1px solid var(--line); border-radius:8px; overflow:hidden; background:var(--surface)}
 .seg button{border:0; background:transparent; padding:6px 12px; font-weight:500; color:var(--muted)}
 .seg button[aria-pressed="true"]{background:var(--accent); color:var(--accent-ink)}
+.btn.icon{padding:6px 9px; line-height:0}
+.btn.icon svg{display:block}
+.btn.icon.spin svg{animation:spin .9s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@media (prefers-reduced-motion:reduce){.btn.icon.spin svg{animation:none}}
 .btn{display:inline-block; border:1px solid var(--line); background:var(--surface); border-radius:8px; padding:6px 12px; font-weight:500; text-decoration:none; color:var(--ink); font-size:.9rem}
 .btn.primary{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
 .btn.small{padding:4px 10px; font-size:.82rem}
@@ -154,7 +159,7 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   <div class="top">
     <h1>Veille crypto</h1>
     <div class="tools">
-      <button type="button" class="btn" id="refresh">Actualiser</button>
+      <button type="button" class="btn icon" id="refresh" aria-label="Actualiser" title="Actualiser"><svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M20 12a8 8 0 1 1-2.5-5.8"/><path d="M20 4v5h-5"/></svg></button>
     </div>
   </div>
   <div class="view" id="view-track">
@@ -729,6 +734,7 @@ function resolvePending(){
 function refresh(){
   if(loading){ rerun = true; return Promise.resolve(); }
   loading = true;
+  $("refresh").classList.add("spin");
   var reqCur = state.cur;
   setStatus();
   return resolvePending().then(function(){
@@ -777,6 +783,7 @@ function refresh(){
     failCount++; lastError = describeError(e);
   }).then(function(){
     loading = false;
+    $("refresh").classList.remove("spin");
     render();
     if(currentTab === "wallet" && typeof renderWallet === "function") renderWallet();
     if(rerun){ rerun = false; refresh(); } else { schedule(); }
