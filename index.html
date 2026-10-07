@@ -504,6 +504,17 @@ function load(){
     s.paper.bal.base = 0; s.paper.cash = 0; s.migratedEth = true;
   }
   s.paper.allEth = true;
+  // Une seule fois : ajout d'une vingtaine de jetons à suivre (ceux qu'on retire ensuite ne reviennent pas)
+  if(!s.seededMore && Array.isArray(s.tokens)){
+    var MORE = [["ONDO","ondo-finance"],["PENDLE","pendle"],["JUP","jupiter-exchange-solana"],["PYTH","pyth-network"],["RENDER","render-token"],
+      ["ARB","arbitrum"],["OP","optimism"],["BONK","bonk"],["WIF","dogwifcoin"],["PEPE","pepe"],["FLOKI","floki"],["SEI","sei-network"],
+      ["TIA","celestia"],["ENA","ethena"],["W","wormhole"],["ZRO","layerzero"],["JTO","jito-governance-token"],["RAY","raydium"],
+      ["PENGU","pudgy-penguins"],["AERO","aerodrome-finance"]];
+    MORE.forEach(function(m){
+      if(!s.tokens.some(function(t){ return t.id === m[1] || String(t.sym).toUpperCase() === m[0]; })) s.tokens.push({sym:m[0], id:m[1], alerts:mkAlerts()});
+    });
+    s.seededMore = true;
+  }
   if(s.paper.bal.cex != null){ s.paper.bal.base = (s.paper.bal.base || 0) + s.paper.bal.cex; delete s.paper.bal.cex; }
   if(!EXCHANGES[s.exchange]) s.exchange = "none";
   if(!s.bridge || !BR_CHAINS[s.bridge.from] || !BR_CHAINS[s.bridge.to]) s.bridge = {from:"base", to:"solana", amount:300};
