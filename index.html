@@ -86,6 +86,7 @@ button{cursor:pointer}
 .trade label{display:flex; flex-direction:column; gap:3px; font-size:.78rem; color:var(--muted)}
 .trade input{border:1px solid var(--line); border-radius:6px; padding:7px 8px; background:var(--surface); font:400 .95rem var(--mono); min-width:0; width:100%}
 .presets{display:flex; gap:6px; flex-wrap:wrap}
+.presets.big.side{grid-template-columns:repeat(2,minmax(0,1fr))}
 .presets.big{display:grid; grid-template-columns:repeat(4,minmax(0,1fr)); gap:8px}
 .btn.big{padding:14px 4px; font-size:1rem; font-weight:600; text-align:center; min-width:0}
 .btn.sel{background:var(--accent); color:var(--accent-ink); border-color:var(--accent)}
@@ -283,7 +284,7 @@ var timer = null;
 var active = {};          // symbole -> liste de messages d'alerte en cours
 var firedKeys = {};       // clé d'alerte -> true (pour ne notifier qu'au passage)
 var openIds = {};         // détails ouverts
-var tradeUI = null;       // {id, side, amount, fraction}
+var tradeUI = {};         // par jeton : {side:"buy"|"sell", fraction}
 var flash = null;         // {text, t, kind}
 var resetAsk = false;
 var simStartDraft = null; // capital de départ en cours de saisie
@@ -606,22 +607,23 @@ function tradePanel(t, d){
   var p = state.paper;
   var cur = CUR_SYMBOL[state.cur];
   var price = d.current_price;
-  var buy = tradeUI.side === "buy";
+  var ts = tradeUI[t.id] || (tradeUI[t.id] = {side:"buy", fraction:0.25});
   var pos = p.pos[t.id];
-  if(!buy && !pos){ tradeUI = null; return null; }
-  if(!(tradeUI.fraction > 0)) tradeUI.fraction = 0.25;
+  if(ts.side === "sell" && !pos) ts.side = "buy";
+  var buy = ts.side === "buy";
+  if(!(ts.fraction > 0)) ts.fraction = 0.25;
 
   var box = h("div", {class:"trade"});
   var pctLabel = h("p", {class:"note", text:""});
   var preview = h("p", {class:"note", text:""});
   var err = h("p", {class:"banner err", hidden:"hidden", text:""});
   function showErr(msg){ err.textContent = msg; err.hidden = false; }
-  function done(msg){ setFlash(msg, "ok"); tradeUI = null; save(); render(); }
+  function done(msg){ setFlash(msg, "ok"); save(); render(); }
 
   function spendFor(fr){ return Math.min(p.cash, Math.round(p.cash * fr * 100) / 100); }
 
   function updatePreview(){
-    var fr = tradeUI.fraction;
+    var fr = ts.fraction;
     if(buy){
       var spend = spendFor(fr);
       if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
@@ -639,12 +641,12 @@ function tradePanel(t, d){
   }
 
   var slider = h("input", {id:(buy ? "buy-" : "sell-") + t.sym, type:"range", min:"5", max:"100", step:"5",
-    value:String(Math.round(tradeUI.fraction * 100)),
+    value:String(Math.round(ts.fraction * 100)),
     "aria-label": buy ? "Part du solde à investir, par tranche de 5 %" : "Part de la position à vendre, par tranche de 5 %"});
   var bigBtns = [];
   var setPct = function(v){
     v = Math.max(5, Math.min(100, Math.round(v / 5) * 5));
-    tradeUI.fraction = v / 100;
+    ts.fraction = v / 100;
     bigBtns.forEach(function(x){ x.b.classList.toggle("sel", x.pc === v); });
     slider.value = String(v);
     pctLabel.textContent = (buy ? "Part du solde à investir : " + v + " % du solde simulé" : "Part à vendre : " + v + " % de la position") + " (par tranche de 5 %)";
@@ -656,10 +658,15 @@ function tradePanel(t, d){
     bigBtns.push({b:b, pc:pc});
     return b;
   }));
-  var minus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 - 5); }, text:"−5 %"});
-  var plus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(tradeUI.fraction * 100 + 5); }, text:"+5 %"});
-  setPct(tradeUI.fraction * 100);
+  var minus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(ts.fraction * 100 - 5); }, text:"−5 %"});
+  var plus = h("button", {type:"button", class:"btn small", onclick:function(){ setPct(ts.fraction * 100 + 5); }, text:"+5 %"});
+  setPct(ts.fraction * 100);
 
+  var sideRow = h("div", {class:"presets big side"}, [
+    h("button", {type:"button", class:"btn big" + (buy ? " sel" : ""), onclick:function(){ ts.side = "buy"; render(); }, text:"Acheter"}),
+    h("button", {type:"button", class:"btn big" + (!buy ? " sel" : ""), disabled: pos ? null : "disabled", onclick:function(){ ts.side = "sell"; render(); }, text:"Vendre"})
+  ]);
+  box.appendChild(sideRow);
   box.appendChild(bigs);
   box.appendChild(pctLabel);
   box.appendChild(h("div", {class:"slider"}, [minus, slider, plus]));
@@ -668,17 +675,16 @@ function tradePanel(t, d){
   box.appendChild(h("div", {class:"acts"}, [
     h("button", {type:"button", class:"btn primary small", onclick:function(){
       if(buy){
-        var spend = spendFor(tradeUI.fraction);
+        var spend = spendFor(ts.fraction);
         var r = paperBuy(p, t.id, t.sym, spend, price);
         if(!r.ok){ showErr(r.msg); return; }
         done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(spend) + " " + cur + ".");
       } else {
-        var rs = paperSell(p, t.id, tradeUI.fraction, price);
+        var rs = paperSell(p, t.id, ts.fraction, price);
         if(!rs.ok){ showErr(rs.msg); return; }
         done("Vente simulée : " + fmtMoney(rs.net) + " " + cur + " reçus (résultat " + (rs.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(rs.pnl)) + " " + cur + ").");
       }
-    }, text: buy ? "Confirmer l'achat (simulé)" : "Confirmer la vente (simulée)"}),
-    h("button", {type:"button", class:"btn small", onclick:function(){ tradeUI = null; render(); }, text:"Annuler"})
+    }, text: buy ? "Confirmer l'achat (simulé)" : "Confirmer la vente (simulée)"})
   ]));
   return box;
 }
@@ -725,7 +731,7 @@ function rulesPanel(t){
   }));
 
   var box = h("details", {}, [
-    h("summary", {text:"Stop loss et achat auto (simulation)"}),
+    h("summary", {text:"Stop loss / Achat auto (menu)"}),
     h("div", {class:"rules"}, [
       h("div", {class:"rule"}, [
         toggleBtn("Stop loss", r.sl.on, function(){ r.sl.on = !r.sl.on; save(); render(); }),
@@ -813,14 +819,6 @@ function card(t){
   // Boutons
   var acts = [];
   var canTrade = !!(d && d.current_price > 0 && simOk);
-  acts.push(h("button", {type:"button", class:"btn small", disabled: canTrade ? null : "disabled", onclick:function(){
-    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "buy") ? null : {id:t.id, side:"buy", fraction:0.25};
-    render();
-  }, text:"Acheter (simulé)"}));
-  acts.push(h("button", {type:"button", class:"btn small", disabled: (canTrade && pos) ? null : "disabled", onclick:function(){
-    tradeUI = (tradeUI && tradeUI.id === t.id && tradeUI.side === "sell") ? null : {id:t.id, side:"sell", fraction:0.25};
-    render();
-  }, text:"Vendre (simulé)"}));
   var ex = EXCHANGES[state.exchange];
   if(ex && ex.url){
     acts.push(h("a", {class:"btn small", href:ex.url(t.sym), target:"_blank", rel:"noopener noreferrer", text:"Trader sur " + ex.label + " ↗"}));
@@ -828,12 +826,12 @@ function card(t){
   if(t.id){
     acts.push(h("a", {class:"btn small", href:"https://www.coingecko.com/en/coins/" + encodeURIComponent(t.id), target:"_blank", rel:"noopener noreferrer", text:"Où acheter ↗"}));
   }
-  parts.push(h("div", {class:"acts"}, acts));
-
-  if(tradeUI && tradeUI.id === t.id && d && d.current_price > 0 && simOk){
+  if(canTrade){
     var tp = tradePanel(t, d);
     if(tp) parts.push(tp);
   }
+  parts.push(h("div", {class:"acts"}, acts));
+
 
   if(t.id) parts.push(rulesPanel(t));
 
@@ -916,7 +914,7 @@ function renderPaper(){
       h("button", {type:"button", class:"btn small primary", onclick:function(){
         var amt = numOrNull(startInput.value) || 300;
         state.paper = newPaper(state.cur, amt);
-        resetAsk = false; tradeUI = null; simStartDraft = null;
+        resetAsk = false; tradeUI = {}; simStartDraft = null;
         setFlash("Portefeuille simulé réinitialisé.", "ok");
         save(); render();
       }, text:"Oui, réinitialiser"}),
