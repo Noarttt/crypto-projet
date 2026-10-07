@@ -168,14 +168,14 @@ function mkAlerts(){ return {above:null, below:null, move:null}; }
 /* PAPER-CORE-START */
 function newPaper(cur, amount){
   var a = amount > 0 ? amount : 300;
-  return {cur: cur || "chf", start: a, cash: a, fee: 1, pos: {}, log: []};
+  return {cur: cur || "chf", start: a, cash: a, fee: 1, feeMode: "auto", pos: {}, log: []};
 }
-function paperBuy(p, id, sym, spend, price){
+function paperBuy(p, id, sym, spend, price, feePct){
   spend = Number(spend);
   if(!(spend > 0)) return {ok:false, msg:"Montant invalide."};
   if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
   if(spend > p.cash + 1e-9) return {ok:false, msg:"Solde simulé insuffisant."};
-  var fee = spend * p.fee / 100;
+  var fee = spend * (feePct != null ? feePct : p.fee) / 100;
   var qty = (spend - fee) / price;
   var pos = p.pos[id];
   if(!pos){ pos = p.pos[id] = {sym:sym, qty:0, cost:0, last:price}; }
@@ -187,14 +187,14 @@ function paperBuy(p, id, sym, spend, price){
   p.log = p.log.slice(0, 50);
   return {ok:true, qty:qty, fee:fee};
 }
-function paperSell(p, id, fraction, price){
+function paperSell(p, id, fraction, price, feePct){
   var pos = p.pos[id];
   if(!pos || !(pos.qty > 0)) return {ok:false, msg:"Aucune position à vendre."};
   if(!(fraction > 0 && fraction <= 1)) return {ok:false, msg:"Part à vendre invalide."};
   if(!(price > 0)) return {ok:false, msg:"Prix indisponible pour l'instant."};
   var qty = pos.qty * fraction;
   var gross = qty * price;
-  var fee = gross * p.fee / 100;
+  var fee = gross * (feePct != null ? feePct : p.fee) / 100;
   var net = gross - fee;
   var costPart = pos.cost * fraction;
   var sym = pos.sym;
@@ -206,6 +206,31 @@ function paperSell(p, id, fraction, price){
   p.log = p.log.slice(0, 50);
   if(fraction >= 0.999999 || pos.qty <= 0) delete p.pos[id];
   return {ok:true, net:net, fee:fee, pnl:net - costPart};
+}
+/* Coût estimé d'un ordre, en % du montant : frais, écart acheteur-vendeur, impact sur le prix (selon la liquidité),
+   frais de réseau (échanges décentralisés) et dérapage lié à la volatilité du moment. Estimation moyenne, pas un tirage au hasard. */
+var GAS_USD = {ethereum:5, bsc:0.2, solana:0.02, base:0.05, arbitrum:0.1, polygon:0.02, optimism:0.1, avalanche:0.1};
+function estimateCost(o){
+  var amt = o.amount > 0 ? o.amount : 0, parts = {};
+  var chg = Math.abs(o.chg24 || 0);
+  if(o.dex){
+    parts.fee = 0.3;
+    parts.spread = 0;
+    parts.impact = o.liquidity > 0 ? Math.min(50, 200 * amt / o.liquidity) : 5;
+    var gas = GAS_USD[o.chain] != null ? GAS_USD[o.chain] : 0.5;
+    parts.gas = amt > 0 ? Math.min(50, gas / amt * 100) : 0;
+    parts.vol = Math.min(3, chg * 0.03);
+  } else {
+    var v = o.volume > 0 ? o.volume : 0;
+    parts.fee = 0.1;
+    parts.spread = v < 1e5 ? 1.5 : v < 1e6 ? 0.5 : v < 1e7 ? 0.2 : 0.1;
+    parts.impact = v > 0 ? Math.min(50, 100 * amt / v) : 2;
+    parts.gas = 0;
+    parts.vol = Math.min(1.5, chg * 0.015);
+  }
+  var pct = parts.fee + parts.spread + parts.impact + parts.gas + parts.vol;
+  pct = Math.max(0.1, Math.min(50, pct));
+  return {pct: Math.round(pct * 100) / 100, parts: parts};
 }
 function paperValue(p, priceOf){
   var total = p.cash;
@@ -513,6 +538,21 @@ function rememberLastPrices(){
   });
   if(changed) save();
 }
+function orderCost(t, amountUsd){
+  var p = state.paper, d = t.id ? data[t.id] : null;
+  if(p.feeMode === "fixed" || !d) return {pct:p.fee, fixed:true, parts:null};
+  return estimateCost({amount:amountUsd, dex:!!d.dex, liquidity:d.liquidity_usd, volume:d.total_volume,
+    chg24:d.price_change_percentage_24h, chain:d.chain});
+}
+function costText(c){
+  if(c.fixed) return "frais et écart simulés (fixes) : " + c.pct + " %";
+  var P = c.parts, f = function(x){ return (Math.round(x * 100) / 100) + " %"; }, out = ["frais " + f(P.fee)];
+  if(P.spread) out.push("écart " + f(P.spread));
+  out.push("impact sur le prix " + f(P.impact));
+  if(P.gas) out.push("réseau " + f(P.gas));
+  out.push("volatilité " + f(P.vol));
+  return "coût estimé " + c.pct + " % (" + out.join(" · ") + ")";
+}
 function setFlash(text, kind){ flash = {text:text, t:Date.now(), kind:kind || "ok"}; }
 
 /* ---------- Règles automatiques (simulation) ---------- */
@@ -531,7 +571,7 @@ function runAutomation(){
     if(!price) return;
     var r = getRules(t);
     if(r.sl.on && stopLossTrigger(p.pos[t.id], price, r.sl.pct)){
-      var res = paperSell(p, t.id, 1, price);
+      var res = paperSell(p, t.id, 1, price, orderCost(t, p.pos[t.id].qty * price).pct);
       if(res.ok){
         p.log[0].auto = "stop loss";
         r.sl.on = false; changed = true;
@@ -541,7 +581,7 @@ function runAutomation(){
     }
     if(r.buy.on && autoBuyTrigger(r.buy.price, price, p.cash)){
       var spend = Math.min(p.cash, Math.round(p.cash * r.buy.fraction * 100) / 100);
-      var rb = paperBuy(p, t.id, t.sym, spend, price);
+      var rb = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct);
       r.buy.on = false; changed = true;
       if(rb.ok){
         p.log[0].auto = "achat auto";
@@ -938,16 +978,18 @@ function tradePanel(t, d){
     if(buy){
       var spend = buySpend();
       if(!(spend > 0)){ preview.textContent = "Solde simulé nul : rien à investir."; return; }
-      var fee = spend * p.fee / 100;
+      var cb = orderCost(t, spend);
+      var fee = spend * cb.pct / 100;
       var qty = (spend - fee) / price;
       preview.textContent = "Achat de " + fmtMoney(spend) + " " + cur + " ≈ " + fmtQty(qty) + " " + t.sym +
-        " (frais et écart simulés : " + fmtMoney(fee) + " " + cur + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur;
+        " · coûts simulés ≈ " + fmtMoney(fee) + " " + cur + " (" + costText(cb) + ") · solde simulé : " + fmtMoney(p.cash) + " " + cur;
     } else {
       var gross = pos.qty * fr * price;
-      var feeS = gross * p.fee / 100;
+      var cs = orderCost(t, gross);
+      var feeS = gross * cs.pct / 100;
       var pnl = gross - feeS - pos.cost * fr;
       preview.textContent = "Vente de " + fmtQty(pos.qty * fr) + " " + t.sym + " ≈ " + fmtMoney(gross - feeS) + " " + cur +
-        " (frais et écart simulés : " + fmtMoney(feeS) + " " + cur + ") · résultat ≈ " + (pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(pnl)) + " " + cur;
+        " · coûts simulés ≈ " + fmtMoney(feeS) + " " + cur + " (" + costText(cs) + ") · résultat ≈ " + (pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(pnl)) + " " + cur;
     }
   }
 
@@ -1003,11 +1045,11 @@ function tradePanel(t, d){
     h("button", {type:"button", class:"btn primary small", onclick:function(){
       if(buy){
         var spend = buySpend();
-        var r = paperBuy(p, t.id, t.sym, spend, price);
+        var r = paperBuy(p, t.id, t.sym, spend, price, orderCost(t, spend).pct);
         if(!r.ok){ showErr(r.msg); return; }
         done("Achat simulé : " + fmtQty(r.qty) + " " + t.sym + " pour " + fmtMoney(spend) + " " + cur + ".");
       } else {
-        var rs = paperSell(p, t.id, sellFrac(), price);
+        var rs = paperSell(p, t.id, sellFrac(), price, orderCost(t, pos.qty * sellFrac() * price).pct);
         if(!rs.ok){ showErr(rs.msg); return; }
         done("Vente simulée : " + fmtMoney(rs.net) + " " + cur + " reçus (résultat " + (rs.pnl >= 0 ? "+" : "−") + fmtMoney(Math.abs(rs.pnl)) + " " + cur + ").");
       }
@@ -1167,7 +1209,7 @@ function card(t){
     if(tp) parts.push(tp);
   }
   if(t.dex && d){
-    parts.push(h("p", {class:"note", text:"Jeton sur échange décentralisé : le prix vient de la paire " + (d.dexId || "") + " (" + (d.chain || t.dex.chain) + "). Le prix réellement obtenu dépend de la liquidité et de la taille de l'ordre ; les frais simulés de 1 % sont souvent trop bas ici. Vérifie le contrat (" + shortAddr(t.dex.addr || "") + ") : des copies frauduleuses existent."}));
+    parts.push(h("p", {class:"note", text:"Jeton sur échange décentralisé : le prix vient de la paire " + (d.dexId || "") + " (" + (d.chain || t.dex.chain) + "). Le prix réellement obtenu dépend de la liquidité et de la taille de l'ordre ; la simulation en tient compte en mode automatique. Vérifie le contrat (" + shortAddr(t.dex.addr || "") + ") : des copies frauduleuses existent."}));
   }
   parts.push(h("div", {class:"acts"}, acts));
 
@@ -1240,6 +1282,12 @@ function renderPaper(){
   // Réglages
   var startInput = h("input", {id:"sim-start", type:"text", inputmode:"decimal", value: simStartDraft != null ? simStartDraft : String(p.start)});
   startInput.addEventListener("input", function(){ simStartDraft = startInput.value; });
+  var feeModeSel = h("select", {id:"sim-feemode"}, [
+    h("option", {value:"auto", text:"Automatique (liquidité, volatilité)"}),
+    h("option", {value:"fixed", text:"Pourcentage fixe"})
+  ]);
+  feeModeSel.value = p.feeMode === "fixed" ? "fixed" : "auto";
+  feeModeSel.addEventListener("change", function(){ p.feeMode = feeModeSel.value; save(); render(); });
   var feeInput = h("input", {id:"sim-fee", type:"text", inputmode:"decimal", value:String(p.fee)});
   feeInput.addEventListener("change", function(){
     var v = parseFloat(String(feeInput.value).replace(",", "."));
@@ -1266,9 +1314,10 @@ function renderPaper(){
     h("summary", {text:"Réglages de la simulation"}),
     h("div", {class:"settings"}, [
       h("label", {for:"sim-start"}, ["Capital de départ ($)", startInput]),
-      h("label", {for:"sim-fee"}, ["Frais + écart simulés par ordre (%)", feeInput])
+      h("label", {for:"sim-feemode"}, ["Calcul des coûts", feeModeSel]),
+      p.feeMode === "fixed" ? h("label", {for:"sim-fee"}, ["Coût fixe par ordre (%)", feeInput]) : null
     ]),
-    h("p", {class:"note", text:"Le capital s'applique à la prochaine réinitialisation. Les frais et l'écart rendent la simulation plus réaliste : sur les petites capitalisations, ils sont souvent supérieurs à 1 %."}),
+    h("p", {class:"note", text:"Le capital s'applique à la prochaine réinitialisation. En mode automatique, chaque ordre est estimé selon la liquidité du jeton, la taille de l'ordre, la volatilité sur 24 h et les frais de réseau pour les jetons décentralisés. Ce sont des estimations moyennes : le coût réel peut être plus élevé, surtout sur les petites capitalisations."}),
     resetBlock
   ]);
   box.appendChild(settings);
