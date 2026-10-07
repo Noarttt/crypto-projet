@@ -2520,11 +2520,11 @@ function convertToUsdcForm(k, c, gi){
   var info = h("p", {class:"note", text:""});
   var msg = h("p", {class:WAL.cuOk ? "banner ok" : "banner err", hidden: WAL.cuMsg ? null : "hidden", text:WAL.cuMsg || ""});
   var gl = gasLine(gi);
-  var spare = Math.max(0, c.natUsd - gi.usd * 1.5);
+  var reserve = Math.max(1, gi.usd * 10), spare = Math.max(0, c.natUsd - reserve);   // réserve : 1 bridge + 3 swaps + cette conversion (5 actions) avec une marge x2 sur le gas, au moins 1 $
   function upd(){
     CV.amount = inp.value;
     var a = numOrNull(inp.value);
-    info.textContent = (a ? "Tu reçois ≈ " + fmtMoney(a * (1 - pct / 100)) + " $ d'USDC (frais estimés " + pct + " %, estimation logique). " : nsym + " convertible en gardant du gas : ≈ " + fmtMoney(spare) + " $. ") + gl.text;
+    info.textContent = (a ? "Tu reçois ≈ " + fmtMoney(a * (1 - pct / 100)) + " $ d'USDC (frais estimés " + pct + " %, estimation logique). " : nsym + " convertible en gardant une réserve de gas de ≈ " + fmtMoney(reserve) + " $ (1 bridge + 3 swaps) : ≈ " + fmtMoney(spare) + " $. ") + gl.text;
   }
   inp.addEventListener("input", upd);
   var go = h("button", {type:"button", class:"btn primary small", onclick:function(){
