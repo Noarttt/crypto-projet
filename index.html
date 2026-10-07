@@ -193,11 +193,13 @@ details summary{cursor:pointer; color:var(--accent); font-size:.88rem; font-weig
   <div class="view" id="view-bridge" hidden></div>
   <div class="view" id="view-wallet" hidden></div>
   <div class="view" id="view-pump" hidden></div>
+  <div class="view" id="view-options" hidden></div>
 </main>
 <nav class="tabs" aria-label="Navigation">
   <button type="button" id="tab-track" class="sel" aria-pressed="true">Suivi</button>
   <button type="button" id="tab-bridge" aria-pressed="false">Bridge</button>
   <button type="button" id="tab-wallet" aria-pressed="false">Wallet</button>
+  <button type="button" id="tab-options" aria-pressed="false">Options</button>
 </nav>
 <script>
 (function(){
@@ -2101,7 +2103,8 @@ function showTab(name){
   });
   $("view-bridge").hidden = name !== "bridge";
   $("view-wallet").hidden = name !== "wallet";
-  ["track", "bridge", "wallet"].forEach(function(n){
+  $("view-options").hidden = name !== "options";
+  ["track", "bridge", "wallet", "options"].forEach(function(n){
     var b = $("tab-" + n);
     b.classList.toggle("sel", n === name);
     b.setAttribute("aria-pressed", String(n === name));
@@ -2110,11 +2113,13 @@ function showTab(name){
   if(pumpOn()) pumpEnter();
   if(name === "bridge") renderBridge();
   if(name === "wallet"){ renderWallet(); }
+  if(name === "options") renderOptions();
   window.scrollTo(0, 0);
 }
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
 $("tab-bridge").addEventListener("click", function(){ showTab("bridge"); });
 $("tab-wallet").addEventListener("click", function(){ showTab("wallet"); });
+$("tab-options").addEventListener("click", function(){ showTab("options"); });
 $("sub-list").addEventListener("click", function(){ TRK.sub = "list"; showTab("track"); });
 $("sub-pump").addEventListener("click", function(){ TRK.sub = "pump"; showTab("track"); });
 document.addEventListener("visibilitychange", function(){
@@ -2925,37 +2930,51 @@ function pumpFollow(x){
     PUMP.follow[x.mint] = "Ajouté à ton suivi (onglet Suivi).";
   }).catch(function(e){ PUMP.follow[x.mint] = describeError(e); }).then(function(){ renderPump(); });
 }
-function renderPump(){
-  var root = $("view-pump");
+function renderOptions(){
+  var root = $("view-options");
   var ae = document.activeElement;
   if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
   root.textContent = "";
   var keyIn = h("input", {id:"pump-key", type:"password", placeholder:"Clé API Helius", value:PUMP.key, autocomplete:"off", autocapitalize:"none", autocorrect:"off", spellcheck:"false"});
   var form = h("form", {class:"add", style:"padding:0; border:0; background:none"}, [keyIn, h("button", {class:"btn primary", type:"submit", text: PUMP.key ? "Remplacer la clé" : "Enregistrer la clé"})]);
   form.style.flexDirection = "column";
+  var msg = h("p", {class:"banner err", hidden:"hidden", text:""});
   form.addEventListener("submit", function(ev){
     ev.preventDefault();
     var k = keyIn.value.trim();
-    if(!/^[A-Za-z0-9-]{16,64}$/.test(k)){ pumpSetStatus("error", "Clé invalide : colle la clé Helius telle quelle (lettres, chiffres et tirets)."); return; }
+    if(!/^[A-Za-z0-9-]{16,64}$/.test(k)){ msg.hidden = false; msg.textContent = "Clé invalide : colle la clé Helius telle quelle (lettres, chiffres et tirets)."; return; }
     pumpDisconnect();
-    PUMP.key = k; PUMP.retry = 0; PUMP.items = []; PUMP.seen = {};
+    PUMP.key = k; PUMP.retry = 0; PUMP.items = []; PUMP.seen = {}; PUMP.status = "idle"; PUMP.msg = "";
     try{ localStorage.setItem(PUMP_KEY_LS, k); }catch(e){}
-    pumpEnter();
+    renderOptions();
   });
-  var kids = [h("h2", {style:"margin:0; font-size:1.05rem", text:"Pump.fun : nouveaux lancements"}),
-    h("p", {class:"note", text:"Clé Helius (offre gratuite : 1 million de crédits par mois). Elle reste dans ce navigateur et n'est envoyée qu'à Helius. La connexion n'est ouverte que lorsque cet onglet est affiché, pour économiser tes crédits."}), form];
-  if(PUMP.key) kids.push(h("button", {type:"button", class:"remove", onclick:function(){
-    pumpDisconnect(); PUMP.key = ""; PUMP.items = []; PUMP.seen = {}; PUMP.status = "idle"; PUMP.msg = "";
-    try{ localStorage.removeItem(PUMP_KEY_LS); }catch(e){}
-    renderPump();
-  }, text:"Supprimer la clé"}));
+  var kids = [h("h2", {style:"margin:0; font-size:1.05rem", text:"Clé Helius (Pump.fun)"}),
+    h("p", {class:"note", text:"Offre gratuite : 1 million de crédits par mois. La clé reste dans ce navigateur et n'est envoyée qu'à Helius. Elle sert au sous-onglet Pump.fun de Suivi."}),
+    form, msg];
+  if(PUMP.key) kids.push(h("p", {class:"banner ok", text:"Clé enregistrée (" + PUMP.key.slice(0, 4) + "…" + PUMP.key.slice(-4) + ")."}),
+    h("button", {type:"button", class:"remove", onclick:function(){
+      pumpDisconnect(); PUMP.key = ""; PUMP.items = []; PUMP.seen = {}; PUMP.status = "idle"; PUMP.msg = "";
+      try{ localStorage.removeItem(PUMP_KEY_LS); }catch(e){}
+      renderOptions();
+    }, text:"Supprimer la clé"}));
+  root.appendChild(h("section", {class:"panel"}, kids));
+}
+function renderPump(){
+  var root = $("view-pump");
+  var ae = document.activeElement;
+  if(ae && ae.tagName === "INPUT" && root.contains(ae)) return;
+  root.textContent = "";
+  var kids = [h("h2", {style:"margin:0; font-size:1.05rem", text:"Pump.fun : nouveaux lancements"})];
+  if(!PUMP.key) kids.push(h("p", {class:"note", text:"Ajoute ta clé Helius dans l'onglet Options pour recevoir les nouveaux lancements en direct."}),
+    h("button", {type:"button", class:"btn primary small", onclick:function(){ showTab("options"); }, text:"Ouvrir Options"}));
+  else kids.push(h("p", {class:"note", text:"La connexion à Helius n'est ouverte que lorsque ce sous-onglet est affiché, pour économiser tes crédits."}));
   if(PUMP.msg) kids.push(h("p", {class:"banner " + (PUMP.status === "error" ? "err" : "ok"), text:PUMP.msg}));
   if(PUMP.pollErr) kids.push(h("p", {class:"note", text:PUMP.pollErr}));
   if(PUMP.status === "live" && !PUMP.items.length && Date.now() - PUMP.since > 60000)
     kids.push(h("p", {class:"note", text:"Aucun lancement reçu depuis plus d'une minute : l'adresse surveillée est peut-être obsolète, ou Helius n'envoie pas ces journaux avec ton offre. Dis-le-moi."}));
   root.appendChild(h("section", {class:"panel"}, kids));
 
-  if(!PUMP.key){ root.appendChild(h("p", {class:"note", text:"Crée une clé gratuite sur helius.dev, colle-la ci-dessus : les nouveaux jetons apparaîtront ici en direct."})); return; }
+  if(!PUMP.key) return;
   var now = Date.now();
   var rows = PUMP.items.map(function(x){
     var c = x.cur;
@@ -2985,10 +3004,10 @@ refresh();
   var saved = null;
   try{ saved = JSON.parse(localStorage.getItem(TAB_KEY) || "null"); }catch(e){}
   var h0 = (location.hash || "").replace("#", "");
-  var name = ["track", "bridge", "wallet", "pump"].indexOf(h0) >= 0 ? h0 : (saved && saved.tab);
+  var name = ["track", "bridge", "wallet", "options", "pump"].indexOf(h0) >= 0 ? h0 : (saved && saved.tab);
   if(saved && saved.sub) WAL.sub = saved.sub;
   if(name === "pump" || (name === "track" && !h0 && saved && saved.trk === "pump")){ TRK.sub = "pump"; name = "track"; }
-  if(name === "bridge" || name === "wallet" || TRK.sub === "pump") showTab(name || "track");
+  if(name === "bridge" || name === "wallet" || name === "options" || TRK.sub === "pump") showTab(name || "track");
 })();
 })();
 </script>
