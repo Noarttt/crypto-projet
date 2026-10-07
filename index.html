@@ -506,11 +506,19 @@ function load(){
   }
   return s;
 }
+var TXW = {last:null};
+function txId(){ var l = state && state.paper && state.paper.log && state.paper.log[0]; return l ? l.t + ":" + l.side : ""; }
 function save(){
   try{ localStorage.setItem(LS_KEY, JSON.stringify(state)); }catch(e){}
+  // une nouvelle opération simulée (achat, vente, swap, bridge, conversion) : on actualise le wallet
+  if(TXW.last !== null){
+    var id = txId();
+    if(id !== TXW.last){ TXW.last = id; if(typeof walletTick === "function") walletTick(true); }
+  }
 }
 
 var state = load();
+TXW.last = txId();
 var data = {};
 var lastOk = null;
 var failCount = 0;
@@ -2054,7 +2062,7 @@ function showTab(name){
     b.setAttribute("aria-pressed", String(n === name));
   });
   if(name === "bridge") renderBridge();
-  if(name === "wallet"){ renderWallet(); walletRefresh(false); walletTick(false); }
+  if(name === "wallet"){ renderWallet(); walletRefresh(false); }
   window.scrollTo(0, 0);
 }
 $("tab-track").addEventListener("click", function(){ showTab("track"); });
@@ -2411,7 +2419,6 @@ function walletRefresh(force){
 function startWalletTimer(){
   if(WAL.timersOn) return;
   WAL.timersOn = true;
-  setInterval(function(){ if(currentTab === "wallet" && !document.hidden){ walletTick(true); walletRefresh(false); } }, 60000);
   // gas des blockchains affichées : toutes les 10 s
   setInterval(function(){
     if(currentTab !== "wallet" || document.hidden) return;
@@ -2421,7 +2428,7 @@ function startWalletTimer(){
     refreshGas(cs, 8000);
   }, 10000);
 }
-/* Chaque minute : prix des monnaies natives + prix des jetons suivis, puis le wallet simulé est recalculé */
+/* Après chaque opération (achat, vente, swap, bridge, conversion) : prix des monnaies natives + prix des jetons suivis, puis le wallet simulé est recalculé */
 function walletTick(force){
   if(WAL.simBusy) return;
   if(!force && WAL.simT && Date.now() - WAL.simT < 55000) return;
@@ -2519,7 +2526,7 @@ function renderWallet(){
   var ae = document.activeElement;
   if(ae && (ae.tagName === "INPUT" || ae.tagName === "SELECT") && root.contains(ae)) return;
   startWalletTimer();
-  if(!WAL.simT) WAL.simT = Date.now();
+  WAL.simT = Date.now();
   root.textContent = "";
   var cur = CUR_SYMBOL[state.cur], p = state.paper;
   var ch = simData();
@@ -2534,7 +2541,7 @@ function renderWallet(){
   });
   root.appendChild(h("section", {class:"panel"}, [
     h("div", {class:"whead"}, [h("h2", {style:"margin:0; font-size:1.05rem", text:"Wallet simulé (argent fictif)"}), h("b", {class:"mono", text:fmtMoney(total) + " " + cur})]),
-    h("p", {class:"note", text:"Actualisé à " + timeStr(WAL.simT) + " (prix mis à jour chaque minute). Les onglets apparaissent et disparaissent selon les fonds présents sur chaque blockchain."}),
+    h("p", {class:"note", text:"Actualisé à " + timeStr(WAL.simT) + " (après chaque achat, vente, swap, bridge ou conversion). Les onglets apparaissent et disparaissent selon les fonds présents sur chaque blockchain."}),
     h("div", {class:"subtabs", role:"group", "aria-label":"Blockchains"}, tabBtns)
   ]));
 
