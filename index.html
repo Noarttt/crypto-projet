@@ -785,10 +785,10 @@ function rpcCall(url, method, params){
 function gasFresh(chain){ var g = GAS[chain]; return g && Date.now() - g.t < 120000; }
 function gasUsdFor(chain){ var g = GAS[chain]; return (g && Date.now() - g.t < 900000) ? g.usd : null; }
 var GAS_TRY = {};
-function refreshGas(extra){
+function refreshGas(extra, maxAge){
   if(gasBusy) return;
-  var chains = [];
-  (extra || []).forEach(function(c){ if(GAS_CHAINS[c] && chains.indexOf(c) < 0 && !gasFresh(c) && !(GAS_TRY[c] && Date.now() - GAS_TRY[c] < 60000)) chains.push(c); });
+  var chains = [], age = maxAge || 120000, gap = Math.min(60000, age);
+  (extra || []).forEach(function(c){ if(GAS_CHAINS[c] && chains.indexOf(c) < 0 && !(GAS[c] && Date.now() - GAS[c].t < age) && !(GAS_TRY[c] && Date.now() - GAS_TRY[c] < gap)) chains.push(c); });
   state.tokens.forEach(function(t){
     var tc = t.dex ? t.dex.chain : t.chain;
     if(tc && GAS_CHAINS[tc] && chains.indexOf(tc) < 0 && !gasFresh(tc) && !(GAS_TRY[tc] && Date.now() - GAS_TRY[tc] < 60000)) chains.push(tc);
@@ -798,7 +798,9 @@ function refreshGas(extra){
   chains.forEach(function(c){ GAS_TRY[c] = Date.now(); });
   var ids = [];
   chains.forEach(function(c){ var g = GAS_CHAINS[c]; [g.coin, g.alt].forEach(function(x){ if(x && ids.indexOf(x) < 0) ids.push(x); }); });
-  api("/simple/price?ids=" + encodeURIComponent(ids.join(",")) + "&vs_currencies=usd").then(function(px){
+  var cachedPx = (typeof WAL !== "undefined" && WAL.px && Date.now() - WAL.pxT < 70000) ? WAL.px : null;
+  var pxP = (cachedPx && ids.every(function(x){ return cachedPx[x]; })) ? Promise.resolve(cachedPx) : api("/simple/price?ids=" + encodeURIComponent(ids.join(",")) + "&vs_currencies=usd");
+  pxP.then(function(px){
     return Promise.all(chains.map(function(c){
       var g = GAS_CHAINS[c];
       var usd = (px[g.coin] && px[g.coin].usd) || (g.alt && px[g.alt] && px[g.alt].usd);
@@ -817,7 +819,7 @@ function refreshGas(extra){
         GAS[c] = {usd: wei * g.units / 1e18 * usd, t:Date.now(), detail: (wei / 1e9).toFixed(wei < 1e8 ? 4 : 2) + " gwei"};
       }).catch(function(){});
     }));
-  }).catch(function(){}).then(function(){ gasBusy = false; render(); });
+  }).catch(function(){}).then(function(){ gasBusy = false; render(); if(currentTab === "wallet" && typeof renderWallet === "function") renderWallet(); });
 }
 /* ----- Devis d'échange en direct pour les jetons décentralisés (Jupiter sur Solana, ParaSwap sur les blockchains EVM) -----
    Coût effectif = écart entre le prix obtenu avec la route réelle et le prix du marché, donc frais du pool + impact inclus. */
@@ -2364,6 +2366,14 @@ function startWalletTimer(){
   if(WAL.timersOn) return;
   WAL.timersOn = true;
   setInterval(function(){ if(currentTab === "wallet" && !document.hidden){ walletTick(true); walletRefresh(false); } }, 60000);
+  // gas des blockchains affichées : toutes les 10 s
+  setInterval(function(){
+    if(currentTab !== "wallet" || document.hidden) return;
+    var cs = [];
+    if(WAL.sub && WAL.sub !== "main") cs.push(WAL.sub);
+    if(WAL.tf){ cs.push(WAL.tf.from); cs.push(WAL.tf.to); }
+    refreshGas(cs, 8000);
+  }, 10000);
 }
 /* Chaque minute : prix des monnaies natives + prix des jetons suivis, puis le wallet simulé est recalculé */
 function walletTick(force){
@@ -2513,6 +2523,15 @@ function renderWallet(){
   renderRealWallets(box);
   root.appendChild(h("details", {class:"panel"}, [h("summary", {style:"cursor:pointer; font-weight:600", text:"Portefeuilles réels (lecture seule)"}), box]));
 }
+/* Gas moyen d'un bridge au départ de cette blockchain : moyenne des devis en direct (route affichée dans l'onglet Bridge) si on en a, sinon ≈ 3 swaps (approbation + dépôt + messagerie éventuelle) */
+function bridgeGasUsd(k){
+  var B = state.bridge, sw = gasInfo(k).usd;
+  if(B.from === k){
+    var Q = liveQuotes(), v = Object.keys(Q || {}).map(function(x){ return Q[x] && Q[x].gas; }).filter(function(x){ return x > 0; });
+    if(v.length) return v.reduce(function(a, b){ return a + b; }, 0) / v.length;
+  }
+  return sw * 3;
+}
 function convertToUsdcForm(k, c, gi){
   var CV = WAL.cu || (WAL.cu = {amount:""});
   var nsym = NATIVE[k].sym, pct = 0.5;
@@ -2520,11 +2539,11 @@ function convertToUsdcForm(k, c, gi){
   var info = h("p", {class:"note", text:""});
   var msg = h("p", {class:WAL.cuOk ? "banner ok" : "banner err", hidden: WAL.cuMsg ? null : "hidden", text:WAL.cuMsg || ""});
   var gl = gasLine(gi);
-  var reserve = Math.max(1, gi.usd * 24), spare = Math.max(0, c.natUsd - reserve);   // réserve : 1 bridge (≈ 3 swaps de gas : approbation + dépôt + frais de messagerie éventuels) + 3 swaps + cette conversion = 7 actions, marge x3, au moins 1 $ (≈ 21 x le gas d'un swap, arrondi à 24)
+  var bg = bridgeGasUsd(k), reserve = bg + gi.usd * 4, spare = Math.max(0, c.natUsd - reserve);
   function upd(){
     CV.amount = inp.value;
     var a = numOrNull(inp.value);
-    info.textContent = (a ? "Tu reçois ≈ " + fmtMoney(a * (1 - pct / 100)) + " $ d'USDC (frais estimés " + pct + " %, estimation logique). " : nsym + " convertible en gardant une réserve de gas de ≈ " + fmtMoney(reserve) + " $ (1 bridge + 3 swaps) : ≈ " + fmtMoney(spare) + " $. ") + gl.text;
+    info.textContent = (a ? "Tu reçois ≈ " + fmtMoney(a * (1 - pct / 100)) + " $ d'USDC (frais estimés " + pct + " %, estimation logique). " : nsym + " convertible : ≈ " + fmtMoney(spare) + " $. Réserve de gas gardée ≈ " + fmtMoney(reserve) + " $ = 1 bridge (≈ " + fmtMoney(bg) + " $) + 3 swaps (≈ " + fmtMoney(gi.usd * 3) + " $) + le gas de cette conversion (≈ " + fmtMoney(gi.usd) + " $), gas " + (gi.live ? "en direct" : "moyen") + ". ") + gl.text;
   }
   inp.addEventListener("input", upd);
   var go = h("button", {type:"button", class:"btn primary small", onclick:function(){
