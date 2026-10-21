@@ -1,0 +1,9 @@
+[Unit]
+Description=Bot DeFi – publication du bilan toutes les 6 heures
+
+[Timer]
+OnCalendar=*-*-* 00/6:07:00
+Persistent=true
+
+[Install]
+WantedBy=timers.target

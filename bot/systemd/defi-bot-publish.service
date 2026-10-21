@@ -1,0 +1,8 @@
+[Unit]
+Description=Bot DeFi – publication du bilan sur GitHub
+
+[Service]
+Type=oneshot
+User=defibot
+WorkingDirectory=/opt/crypto-projet/bot
+ExecStart=/opt/crypto-projet/bot/scripts/publish.sh

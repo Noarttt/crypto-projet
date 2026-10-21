@@ -1,0 +1,7 @@
+[Unit]
+Description=Bot DeFi – récupération de la configuration validée depuis GitHub
+
+[Service]
+Type=oneshot
+User=defibot
+ExecStart=/opt/crypto-projet/bot/scripts/sync-config.sh

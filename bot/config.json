@@ -1,0 +1,62 @@
+{
+  "_note": "Fichier relu par le bot toutes les 60 s. Claude propose les changements, l'utilisateur les valide (aucun ajustement autonome). Paramètres d'analyse = doc « Bot DeFi – Stratégie v1 » au 21.10.2026.",
+  "phase": "enregistrement",
+  "paused": false,
+
+  "solana": {
+    "enabled": true,
+    "snapshot_minutes": [1, 2, 3, 4, 5, 6, 8, 10, 15, 20, 30, 45, 60, 90, 120],
+    "holders_minutes": [1, 10],
+    "curve_trades_delay_s": 20,
+    "boost_seconds_candles": true,
+    "outcome_after_minutes": 150
+  },
+
+  "base": {
+    "enabled": true,
+    "poll_every_s": 120,
+    "snapshot_minutes": [5, 15, 30, 60, 120],
+    "outcome_after_minutes": 150,
+    "outcome_min_liquidity_usd": 5000,
+    "outcome_min_volume_h1_usd": 10000,
+    "quote_symbols": ["WETH", "ETH", "USDC"],
+    "fee_pct_per_side": 0.3
+  },
+
+  "rate_limits_per_min": {
+    "geckoterminal": 8,
+    "dexscreener": 240,
+    "rpc": 60
+  },
+
+  "analysis": {
+    "success": { "gain_pct": 50, "window_min": 120, "max_drawdown_first_pct": 25 },
+    "failure": { "loss_pct": 50, "window_min": 30 },
+    "boost_window_min": 5,
+    "entry": {
+      "skip_green_candle_pct": 15,
+      "pullback_min_pct": 10,
+      "pullback_max_pct": 15,
+      "pullback_window_min": 10,
+      "higher_low_min_dip_pct": 5
+    },
+    "exit": {
+      "stop_loss_pct": 20,
+      "tp1_pct": 30,
+      "tp1_sell_share": 0.55,
+      "stop_after_tp1_pct": 8,
+      "tp2_pct": 80,
+      "tp2_sell_share": 0.35,
+      "moonbag_share": 0.10,
+      "moonbag_requires_tp2": true,
+      "moonbag_multiples": [[5, 0.5], [20, 0.25], [100, 0.25]],
+      "time_exit_min_variants": [60, 90],
+      "sim_horizon_min": 120
+    },
+    "costs": {
+      "position_usd": 35,
+      "slippage_pct_per_side": 0.5,
+      "fixed_cost_usd_per_tx": 0.15
+    }
+  }
+}
