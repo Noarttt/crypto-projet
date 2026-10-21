@@ -1,0 +1,20 @@
+[Unit]
+Description=Bot DeFi – phase 1 (enregistrement)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=defibot
+WorkingDirectory=/opt/crypto-projet/bot
+ExecStart=/usr/bin/node src/index.js
+Restart=always
+RestartSec=10
+NoNewPrivileges=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/crypto-projet/bot/data
+PrivateTmp=true
+
+[Install]
+WantedBy=multi-user.target
